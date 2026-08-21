@@ -7,6 +7,7 @@ import os
 
 from agents.graph import PipelineState, build_graph, set_progress_hook, set_stage_hook
 from api.run_state import run_state
+from api.vector_indexer import index_ranked_jobs_job
 from llm import get_llm
 from profile_loader import load_resume_text, parse_profile
 
@@ -39,5 +40,11 @@ def run_pipeline_job() -> None:
             profile=profile,
             new_applications_count=len(result["new_applications"]),
         )
+
+        # Runs after set_done(), so the frontend already sees "done" and the
+        # ranked results — this is best-effort follow-up work, not something
+        # the user waits on. index_ranked_jobs_job never raises (see its
+        # own try/except), so it can't turn a successful run into an error.
+        index_ranked_jobs_job(result["ranked_jobs"])
     except Exception as e:
         run_state.set_error(str(e))

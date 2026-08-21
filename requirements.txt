@@ -11,3 +11,5 @@ python-dotenv
 httpx
 feedparser
 rich
+fastembed
+chromadb

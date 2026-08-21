@@ -4,6 +4,7 @@ __pycache__/
 data/applications.json
 data/reports/
 data/cache.sqlite3
+data/chroma/
 .venv/
 
 # frontend

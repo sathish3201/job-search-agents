@@ -10,7 +10,7 @@ load_dotenv(override=True)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import applications, improvement, pipeline, profile
+from api.routers import applications, improvement, pipeline, profile, similar_jobs
 
 app = FastAPI(title="Job Search Agent API", version="1.0")
 
@@ -34,6 +34,7 @@ app.include_router(pipeline.router)
 app.include_router(applications.router)
 app.include_router(profile.router)
 app.include_router(improvement.router)
+app.include_router(similar_jobs.router)
 
 
 @app.get("/health")
