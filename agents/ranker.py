@@ -87,7 +87,23 @@ MATCHING_SKILLS: <up to 5, comma-separated>
 MISSING_SKILLS: <up to 5, comma-separated>
 PITCH: <1-2 sentences, first person, why this candidate fits>
 """
-        resp = llm.invoke(prompt).content
+        try:
+            resp = llm.invoke(prompt).content
+        except Exception as e:
+            # A stuck/failed connection to the LLM backend (e.g. a stalled
+            # ngrok tunnel) must not take the whole batch down with it —
+            # one job fails to rank, the rest still get a fair shot. Not
+            # cached, so a transient failure gets retried on the next run.
+            print(f"[ranker] {job.title} @ {job.company}: LLM call failed ({e}); scoring 0", flush=True)
+            return RankedJob(
+                job=job,
+                fit_score=0,
+                reasoning=f"Ranking failed: {e}",
+                matching_skills=[],
+                missing_skills=[],
+                tailored_pitch="",
+            )
+
         parsed = _parse_ranking_response(resp)
         self._cache.set(cache_key, {**parsed, "reasoning": resp})
 
