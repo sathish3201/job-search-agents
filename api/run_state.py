@@ -26,6 +26,17 @@ class RunState:
             self.status = "running"
             self.message = "Pipeline is running..."
 
+    def set_progress(self, stage: str, done: int = 0, total: int = 0) -> None:
+        """Called from inside the pipeline to report where it currently is —
+        ranking one job at a time via a slow remote LLM is the long pole, so
+        without this the status endpoint just says "running" for minutes with
+        no indication anything is happening."""
+        with self._lock:
+            if total:
+                self.message = f"{stage}: {done}/{total}"
+            else:
+                self.message = stage
+
     def set_done(
         self,
         ranked_jobs: list[RankedJob],

@@ -5,10 +5,13 @@ already scored against the same resume text."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Optional
 
 from cache import SqliteCache, content_hash
 from llm import get_llm
 from models import CandidateProfile, JobListing, RankedJob
+
+ProgressCallback = Callable[[int, int], None]  # (done, total) -> None
 
 
 def _clean_skill_list(raw: str, max_items: int = 8) -> list[str]:
@@ -99,10 +102,30 @@ PITCH: <one paragraph, first person, why this candidate is a strong fit>
             tailored_pitch=parsed["pitch"],
         )
 
-    def rank_all(self, jobs: list[JobListing], profile: CandidateProfile) -> list[RankedJob]:
+    def rank_all(
+        self,
+        jobs: list[JobListing],
+        profile: CandidateProfile,
+        on_progress: Optional[ProgressCallback] = None,
+    ) -> list[RankedJob]:
+        """on_progress(done, total) fires after each job finishes ranking —
+        each call can be a slow remote LLM round-trip, so callers (the API
+        layer) use this to report live progress instead of a flat "running"
+        with no feedback for minutes."""
         if not jobs:
             return []
+
+        total = len(jobs)
+        done = 0
+        ranked: list[RankedJob] = []
+
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            ranked = list(pool.map(lambda j: self._rank_one(j, profile), jobs))
+            futures = [pool.submit(self._rank_one, job, profile) for job in jobs]
+            for future in futures:
+                ranked.append(future.result())
+                done += 1
+                if on_progress:
+                    on_progress(done, total)
+
         ranked.sort(key=lambda r: r.fit_score, reverse=True)
         return ranked

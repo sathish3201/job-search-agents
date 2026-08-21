@@ -30,6 +30,18 @@ _ranker = LLMRanker(cache=_cache)
 
 MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown, not tracked
 
+# Optional (done, total) -> None hook, set by api/pipeline_runner.py before
+# invoking the graph, so the ranking node (the slow part — one remote LLM
+# call per job) can report live progress. Not a LangGraph state field because
+# callables aren't pydantic-serializable; module-level is the simplest wiring
+# for a single-process deployment.
+_progress_hook = None
+
+
+def set_progress_hook(hook) -> None:
+    global _progress_hook
+    _progress_hook = hook
+
 
 class PipelineState(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
@@ -80,7 +92,7 @@ def shortlist_jobs_node(state: PipelineState) -> dict:
     if not state.raw_jobs:
         return {"shortlisted_jobs": []}
 
-    shortlisted = _embedding_filter.shortlist(state.raw_jobs, state.profile, top_k=15)
+    shortlisted = _embedding_filter.shortlist(state.raw_jobs, state.profile, top_k=8)
     print(f"[shortlist_jobs] {len(state.raw_jobs)} raw -> {len(shortlisted)} shortlisted for LLM ranking")
     return {"shortlisted_jobs": shortlisted}
 
@@ -93,7 +105,7 @@ def rank_jobs_node(state: PipelineState) -> dict:
     if not state.shortlisted_jobs:
         return {"ranked_jobs": []}
 
-    ranked = _ranker.rank_all(state.shortlisted_jobs, state.profile)
+    ranked = _ranker.rank_all(state.shortlisted_jobs, state.profile, on_progress=_progress_hook)
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
     print(f"[rank_jobs] {before} ranked -> {len(ranked)} kept (fit_score >= {MIN_FIT_SCORE})")
