@@ -175,7 +175,14 @@ HEADLINE: <text>
 SUMMARY: <text>
 REASONING: <why these changes, referencing the specific market signal>
 """
-    resp = llm.invoke(prompt).content
+    try:
+        resp = llm.invoke(prompt).content
+    except Exception as e:
+        # Same reasoning as ranker.py's per-job try/except: a transient LLM
+        # failure on this cosmetic follow-up step must never wipe out the
+        # ranked jobs that already succeeded upstream.
+        print(f"[draft_profile_updates] LLM call failed ({e}); skipping profile draft", flush=True)
+        return {"profile_drafts": []}
 
     headline, summary, reasoning = state.profile.headline, state.profile.summary, ""
     for line in resp.splitlines():
