@@ -1,0 +1,19 @@
+.env
+__pycache__/
+*.pyc
+data/applications.json
+data/reports/
+data/cache.sqlite3
+.venv/
+
+# frontend
+web/node_modules/
+web/dist/
+web/.env
+web/drive.cjs
+
+# local test artifacts
+screenshot-*.png
+api_server.log
+run*.log
+
