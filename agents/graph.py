@@ -30,17 +30,24 @@ _ranker = LLMRanker(cache=_cache)
 
 MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown, not tracked
 
-# Optional (done, total) -> None hook, set by api/pipeline_runner.py before
-# invoking the graph, so the ranking node (the slow part — one remote LLM
-# call per job) can report live progress. Not a LangGraph state field because
-# callables aren't pydantic-serializable; module-level is the simplest wiring
-# for a single-process deployment.
+# Optional hooks, set by api/pipeline_runner.py before invoking the graph, so
+# individual nodes can report live progress. Not LangGraph state fields
+# because callables aren't pydantic-serializable; module-level is the
+# simplest wiring for a single-process deployment.
+#   _progress_hook(done, total) -> None      -- per-job ranking progress
+#   _stage_hook(stage_name) -> None          -- coarse "which node is running"
 _progress_hook = None
+_stage_hook = None
 
 
 def set_progress_hook(hook) -> None:
     global _progress_hook
     _progress_hook = hook
+
+
+def set_stage_hook(hook) -> None:
+    global _stage_hook
+    _stage_hook = hook
 
 
 class PipelineState(BaseModel):
@@ -59,15 +66,19 @@ class PipelineState(BaseModel):
 
 
 def search_jobs_node(state: PipelineState) -> dict:
+    print("[search_jobs] starting", flush=True)
     sources = active_sources()
     if not sources:
-        print("[search_jobs] No job sources configured — add API keys to .env (see .env.example).")
+        print("[search_jobs] No job sources configured — add API keys to .env (see .env.example).", flush=True)
         return {"raw_jobs": []}
 
     all_jobs: list[JobListing] = []
     for src in sources:
+        if _stage_hook:
+            _stage_hook(f"Searching {src.name}")
+        print(f"[search_jobs] calling {src.name}...", flush=True)
         jobs = src.search(state.query, state.location, state.remote_ok, limit=15)
-        print(f"[search_jobs] {src.name}: {len(jobs)} results")
+        print(f"[search_jobs] {src.name}: {len(jobs)} results", flush=True)
         all_jobs.extend(jobs)
 
     # De-duplicate across sources by (title, company) as a cheap heuristic,
@@ -89,11 +100,14 @@ def shortlist_jobs_node(state: PipelineState) -> dict:
     down to the top matches by cosine similarity before the slow LLM ranker runs.
     This is the main speed lever: LLM calls only happen for the shortlist, not
     every raw result."""
+    print(f"[shortlist_jobs] starting with {len(state.raw_jobs)} raw jobs", flush=True)
+    if _stage_hook:
+        _stage_hook(f"Shortlisting {len(state.raw_jobs)} jobs by relevance")
     if not state.raw_jobs:
         return {"shortlisted_jobs": []}
 
     shortlisted = _embedding_filter.shortlist(state.raw_jobs, state.profile, top_k=8)
-    print(f"[shortlist_jobs] {len(state.raw_jobs)} raw -> {len(shortlisted)} shortlisted for LLM ranking")
+    print(f"[shortlist_jobs] {len(state.raw_jobs)} raw -> {len(shortlisted)} shortlisted for LLM ranking", flush=True)
     return {"shortlisted_jobs": shortlisted}
 
 
@@ -105,6 +119,8 @@ def rank_jobs_node(state: PipelineState) -> dict:
     if not state.shortlisted_jobs:
         return {"ranked_jobs": []}
 
+    if _stage_hook:
+        _stage_hook(f"Ranking {len(state.shortlisted_jobs)} jobs")
     ranked = _ranker.rank_all(state.shortlisted_jobs, state.profile, on_progress=_progress_hook)
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]

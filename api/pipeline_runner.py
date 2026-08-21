@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 
-from agents.graph import PipelineState, build_graph, set_progress_hook
+from agents.graph import PipelineState, build_graph, set_progress_hook, set_stage_hook
 from api.run_state import run_state
 from llm import get_llm
 from profile_loader import load_resume_text, parse_profile
@@ -17,12 +17,12 @@ def run_pipeline_job() -> None:
     can report them without crashing the server process."""
     run_state.set_running()
     set_progress_hook(lambda done, total: run_state.set_progress("Ranking jobs", done, total))
+    set_stage_hook(lambda stage: run_state.set_progress(stage))
     try:
         llm = get_llm()
         resume_text = load_resume_text()
         run_state.set_progress("Parsing candidate profile")
         profile = parse_profile(resume_text, llm)
-        run_state.set_progress("Searching job sources")
 
         graph = build_graph()
         state = PipelineState(
