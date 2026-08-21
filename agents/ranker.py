@@ -14,15 +14,30 @@ from models import CandidateProfile, JobListing, RankedJob
 ProgressCallback = Callable[[int, int], None]  # (done, total) -> None
 
 
+def _looks_like_unfilled_placeholder(text: str) -> bool:
+    """Small local models occasionally echo the prompt's own format hint
+    verbatim (e.g. literally returning "<up to 5, comma-separated>") instead
+    of filling it in. Catch that so it never surfaces as real data — a
+    placeholder starting with '<' and ending with '>' is never a legitimate
+    skill name or pitch sentence."""
+    stripped = text.strip()
+    return stripped.startswith("<") and stripped.endswith(">")
+
+
 def _clean_skill_list(raw: str, max_items: int = 8) -> list[str]:
     """Small local models sometimes degenerate into repeating the same token
     hundreds of times (a known repetition-loop failure mode, especially on
     poor-fit/out-of-domain jobs). De-duplicate and cap so one bad generation
     can't blow up downstream aggregation (e.g. the improvement report)."""
+    if _looks_like_unfilled_placeholder(raw):
+        return []
+
     seen = []
     for item in raw.split(","):
         item = item.strip()
-        if item and item not in seen:
+        if not item or _looks_like_unfilled_placeholder(item):
+            continue
+        if item not in seen:
             seen.append(item)
         if len(seen) >= max_items:
             break
@@ -42,7 +57,8 @@ def _parse_ranking_response(resp: str) -> dict:
         elif line.startswith("MISSING_SKILLS:"):
             missing = _clean_skill_list(line.split(":", 1)[1])
         elif line.startswith("PITCH:"):
-            pitch = line.split(":", 1)[1].strip()
+            candidate_pitch = line.split(":", 1)[1].strip()
+            pitch = "" if _looks_like_unfilled_placeholder(candidate_pitch) else candidate_pitch
     return {"score": score, "matching": matching, "missing": missing, "pitch": pitch}
 
 
