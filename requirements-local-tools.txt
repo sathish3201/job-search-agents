@@ -1,0 +1,8 @@
+# Local-only utility scripts (scripts/scrape_portfolio.py) — never installed
+# on the deployed API. Playwright+Chromium and ChromaDB/fastembed are too
+# heavy for Render's 512MB free tier; these run on your own machine.
+# Install with: pip install -r requirements-local-tools.txt
+playwright
+beautifulsoup4
+chromadb
+fastembed
