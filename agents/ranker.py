@@ -69,25 +69,23 @@ class LLMRanker:
                 tailored_pitch=cached["pitch"],
             )
 
-        llm = get_llm()
-        prompt = f"""You are a career-fit assessor. Score how well this candidate fits this job.
+        # Keep the prompt lean: this call runs once per shortlisted job against
+        # a phone-hosted model, so every extra hundred input/output tokens is
+        # real wall-clock time. Trim the job description to its first ~500
+        # chars (title/summary line, usually enough to judge fit) and ask for
+        # a short pitch (1-2 sentences) instead of a full paragraph.
+        llm = get_llm(max_tokens=220)
+        prompt = f"""Score this candidate's fit for the job. Be terse.
 
-CANDIDATE PROFILE:
-Headline: {profile.headline}
-Summary: {profile.summary}
-Skills: {", ".join(profile.skills)}
-Years of experience: {profile.years_experience}
+CANDIDATE: {profile.headline}. Skills: {", ".join(profile.skills[:12])}. {profile.years_experience}y exp.
 
-JOB:
-Title: {job.title}
-Company: {job.company}
-Description: {job.description[:1200]}
+JOB: {job.title} at {job.company}. {job.description[:500]}
 
-Respond in this exact format:
-SCORE: <0-100 integer>
-MATCHING_SKILLS: <comma-separated, max 6>
-MISSING_SKILLS: <comma-separated, max 6>
-PITCH: <one paragraph, first person, why this candidate is a strong fit>
+Respond in exactly this format, nothing else:
+SCORE: <0-100>
+MATCHING_SKILLS: <up to 5, comma-separated>
+MISSING_SKILLS: <up to 5, comma-separated>
+PITCH: <1-2 sentences, first person, why this candidate fits>
 """
         resp = llm.invoke(prompt).content
         parsed = _parse_ranking_response(resp)
