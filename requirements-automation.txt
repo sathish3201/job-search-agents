@@ -1,0 +1,4 @@
+# Only needed for agents/automation.py (opt-in, high-risk LinkedIn/Naukri
+# browser automation) — never installed on the deployed API, which doesn't
+# use it. Install locally with: pip install -r requirements-automation.txt
+playwright
