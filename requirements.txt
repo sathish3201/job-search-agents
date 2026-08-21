@@ -11,4 +11,3 @@ python-dotenv
 httpx
 feedparser
 rich
-fastembed

@@ -1,11 +1,22 @@
-"""The main LangGraph pipeline wiring together search -> shortlist -> rank -> track -> profile-draft.
+"""The main LangGraph pipeline wiring together search -> rank -> track -> profile-draft.
 
 Flow:
-    search_jobs -> shortlist_jobs (fast embedding filter) -> rank_jobs (cached LLM
-    scoring, parallel per job) -> update_tracker -> draft_profile_updates -> END
+    search_jobs -> rank_jobs (cached LLM scoring, parallel per job) ->
+    update_tracker -> draft_profile_updates -> END
 
-Each node delegates to a dedicated module (embedding_filter.py, ranker.py) rather
-than containing the logic inline — the graph's only job is orchestration.
+There was previously an embedding-based shortlist step (fastembed) between
+search and rank, meant to cut LLM calls by pre-filtering to the top-K most
+relevant jobs before the slow ranking step. Removed: fastembed's ONNX
+inference is CPU-only and Render's free tier doesn't have the headroom for
+it — a handful of embed() calls could hang for minutes, which looked like
+the whole pipeline was stuck. At the actual job volume here (~15/run) the
+LLM ranker alone is fast enough (see agents/ranker.py's trimmed prompt)
+that a pre-filter isn't worth the infrastructure cost. If job volume grows
+significantly, reintroduce filtering via the LLM backend's own embeddings
+endpoint instead of a separate CPU-bound library.
+
+Each node delegates to a dedicated module (ranker.py) rather than
+containing the logic inline — the graph's only job is orchestration.
 """
 from __future__ import annotations
 
@@ -16,7 +27,6 @@ from pydantic import BaseModel
 
 from langgraph.graph import StateGraph, START, END
 
-from agents.embedding_filter import EmbeddingFilter
 from agents.ranker import LLMRanker
 from cache import SqliteCache
 from llm import get_llm
@@ -25,7 +35,6 @@ from sources import active_sources
 from store import ApplicationStore
 
 _cache = SqliteCache()
-_embedding_filter = EmbeddingFilter(cache=_cache)
 _ranker = LLMRanker(cache=_cache)
 
 MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown, not tracked
@@ -59,7 +68,6 @@ class PipelineState(BaseModel):
     profile: CandidateProfile
 
     raw_jobs: list[JobListing] = []
-    shortlisted_jobs: list[JobListing] = []
     ranked_jobs: Annotated[list[RankedJob], operator.add] = []
     new_applications: list[Application] = []
     profile_drafts: list[ProfileDraft] = []
@@ -95,33 +103,17 @@ def search_jobs_node(state: PipelineState) -> dict:
     return {"raw_jobs": deduped}
 
 
-def shortlist_jobs_node(state: PipelineState) -> dict:
-    """Fast embedding pass (fastembed, local ONNX, no LLM call) narrows raw_jobs
-    down to the top matches by cosine similarity before the slow LLM ranker runs.
-    This is the main speed lever: LLM calls only happen for the shortlist, not
-    every raw result."""
-    print(f"[shortlist_jobs] starting with {len(state.raw_jobs)} raw jobs", flush=True)
-    if _stage_hook:
-        _stage_hook(f"Shortlisting {len(state.raw_jobs)} jobs by relevance")
-    if not state.raw_jobs:
-        return {"shortlisted_jobs": []}
-
-    shortlisted = _embedding_filter.shortlist(state.raw_jobs, state.profile, top_k=8)
-    print(f"[shortlist_jobs] {len(state.raw_jobs)} raw -> {len(shortlisted)} shortlisted for LLM ranking", flush=True)
-    return {"shortlisted_jobs": shortlisted}
-
-
 def rank_jobs_node(state: PipelineState) -> dict:
-    """LLM-scores only the shortlisted jobs, via LLMRanker (agents/ranker.py),
-    which itself is cached per (job, resume) hash in SQLite — a repeat run over
-    the same jobs costs zero LLM calls. Jobs scoring below MIN_FIT_SCORE are
-    dropped here so they never reach the tracker, the report, or the UI."""
-    if not state.shortlisted_jobs:
+    """LLM-scores every raw job, via LLMRanker (agents/ranker.py), which itself
+    is cached per (job, resume) hash in SQLite — a repeat run over the same
+    jobs costs zero LLM calls. Jobs scoring below MIN_FIT_SCORE are dropped
+    here so they never reach the tracker, the report, or the UI."""
+    if not state.raw_jobs:
         return {"ranked_jobs": []}
 
     if _stage_hook:
-        _stage_hook(f"Ranking {len(state.shortlisted_jobs)} jobs")
-    ranked = _ranker.rank_all(state.shortlisted_jobs, state.profile, on_progress=_progress_hook)
+        _stage_hook(f"Ranking {len(state.raw_jobs)} jobs")
+    ranked = _ranker.rank_all(state.raw_jobs, state.profile, on_progress=_progress_hook)
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
     print(f"[rank_jobs] {before} ranked -> {len(ranked)} kept (fit_score >= {MIN_FIT_SCORE})")
@@ -207,14 +199,12 @@ REASONING: <why these changes, referencing the specific market signal>
 def build_graph():
     builder = StateGraph(PipelineState)
     builder.add_node("search_jobs", search_jobs_node)
-    builder.add_node("shortlist_jobs", shortlist_jobs_node)
     builder.add_node("rank_jobs", rank_jobs_node)
     builder.add_node("update_tracker", update_tracker_node)
     builder.add_node("draft_profile_updates", draft_profile_updates_node)
 
     builder.add_edge(START, "search_jobs")
-    builder.add_edge("search_jobs", "shortlist_jobs")
-    builder.add_edge("shortlist_jobs", "rank_jobs")
+    builder.add_edge("search_jobs", "rank_jobs")
     builder.add_edge("rank_jobs", "update_tracker")
     builder.add_edge("update_tracker", "draft_profile_updates")
     builder.add_edge("draft_profile_updates", END)

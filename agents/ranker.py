@@ -69,8 +69,8 @@ class LLMRanker:
                 tailored_pitch=cached["pitch"],
             )
 
-        # Keep the prompt lean: this call runs once per shortlisted job against
-        # a phone-hosted model, so every extra hundred input/output tokens is
+        # Keep the prompt lean: this call runs once per job against a
+        # phone-hosted model, so every extra hundred input/output tokens is
         # real wall-clock time. Trim the job description to its first ~500
         # chars (title/summary line, usually enough to judge fit) and ask for
         # a short pitch (1-2 sentences) instead of a full paragraph.
