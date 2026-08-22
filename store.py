@@ -3,10 +3,20 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 
 from models import Application
 
 DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "applications.json")
+
+# Guards every read-modify-write cycle across the whole process. Needed
+# because rank_jobs_node now persists each job the instant it's ranked (see
+# graph.py's _persist_if_qualifying), called concurrently from the ranker's
+# ThreadPoolExecutor workers — each ApplicationStore() instance does a fresh
+# load-then-save, so two threads racing here could silently lose one
+# thread's write (last save wins, load-before-save means neither sees the
+# other's update). A single process-wide lock serializes those cycles.
+_lock = threading.Lock()
 
 
 class ApplicationStore:
@@ -27,8 +37,10 @@ class ApplicationStore:
             json.dump({k: v.model_dump(mode="json") for k, v in self._apps.items()}, f, indent=2)
 
     def upsert(self, app: Application) -> None:
-        self._apps[app.dedupe_key] = app
-        self.save()
+        with _lock:
+            self._load()  # pick up any writes made by another thread since __init__
+            self._apps[app.dedupe_key] = app
+            self.save()
 
     def get(self, dedupe_key: str) -> Application | None:
         return self._apps.get(dedupe_key)
@@ -37,4 +49,6 @@ class ApplicationStore:
         return list(self._apps.values())
 
     def seen_keys(self) -> set[str]:
-        return set(self._apps.keys())
+        with _lock:
+            self._load()
+            return set(self._apps.keys())

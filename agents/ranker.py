@@ -12,6 +12,7 @@ from llm import get_llm
 from models import CandidateProfile, JobListing, RankedJob
 
 ProgressCallback = Callable[[int, int], None]  # (done, total) -> None
+RankedCallback = Callable[[RankedJob], None]  # fires the instant one job finishes
 
 
 def _looks_like_unfilled_placeholder(text: str) -> bool:
@@ -137,11 +138,18 @@ PITCH: <1-2 sentences, first person, why this candidate fits>
         jobs: list[JobListing],
         profile: CandidateProfile,
         on_progress: Optional[ProgressCallback] = None,
+        on_ranked: Optional[RankedCallback] = None,
     ) -> list[RankedJob]:
         """on_progress(done, total) fires after each job finishes ranking —
         each call can be a slow remote LLM round-trip, so callers (the API
         layer) use this to report live progress instead of a flat "running"
-        with no feedback for minutes."""
+        with no feedback for minutes.
+
+        on_ranked(job) fires with each individual RankedJob the instant it's
+        produced, before the whole batch finishes — used to persist results
+        to disk incrementally (see graph.py's rank_jobs_node) so a mid-run
+        process restart (Render free tier can do this) loses at most the
+        one job in flight, not the entire run's work."""
         if not jobs:
             return []
 
@@ -152,7 +160,10 @@ PITCH: <1-2 sentences, first person, why this candidate fits>
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             futures = [pool.submit(self._rank_one, job, profile) for job in jobs]
             for future in futures:
-                ranked.append(future.result())
+                result = future.result()
+                ranked.append(result)
+                if on_ranked:
+                    on_ranked(result)
                 done += 1
                 if on_progress:
                     on_progress(done, total)

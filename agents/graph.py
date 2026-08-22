@@ -103,17 +103,47 @@ def search_jobs_node(state: PipelineState) -> dict:
     return {"raw_jobs": deduped}
 
 
+def _persist_if_qualifying(ranked: RankedJob) -> None:
+    """Writes one job to the application tracker the instant it's ranked,
+    if it clears MIN_FIT_SCORE. Called from LLMRanker's on_ranked hook, so
+    results survive a mid-run process restart — previously everything was
+    held in memory until update_tracker_node ran at the very end, which
+    meant a container restart (Render free tier can do this) silently threw
+    away an entire run's worth of completed LLM calls with no error shown,
+    just a reset to "idle" with empty results. Idempotent: ApplicationStore
+    upserts by dedupe_key, so update_tracker_node re-running over the same
+    jobs afterward is a harmless no-op, not a double-write."""
+    if ranked.fit_score < MIN_FIT_SCORE:
+        return
+    store = ApplicationStore()
+    key = ranked.job.dedupe_key
+    if key in store.seen_keys():
+        return
+    store.upsert(
+        Application(
+            dedupe_key=key,
+            job=ranked.job,
+            status=ApplicationStatus.FOUND,
+            fit_score=ranked.fit_score,
+        )
+    )
+
+
 def rank_jobs_node(state: PipelineState) -> dict:
     """LLM-scores every raw job, via LLMRanker (agents/ranker.py), which itself
     is cached per (job, resume) hash in SQLite — a repeat run over the same
     jobs costs zero LLM calls. Jobs scoring below MIN_FIT_SCORE are dropped
-    here so they never reach the tracker, the report, or the UI."""
+    here so they never reach the tracker, the report, or the UI. Each result
+    is also persisted to disk the moment it's produced (see
+    _persist_if_qualifying) rather than waiting for the whole batch."""
     if not state.raw_jobs:
         return {"ranked_jobs": []}
 
     if _stage_hook:
         _stage_hook(f"Ranking {len(state.raw_jobs)} jobs")
-    ranked = _ranker.rank_all(state.raw_jobs, state.profile, on_progress=_progress_hook)
+    ranked = _ranker.rank_all(
+        state.raw_jobs, state.profile, on_progress=_progress_hook, on_ranked=_persist_if_qualifying
+    )
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
     print(f"[rank_jobs] {before} ranked -> {len(ranked)} kept (fit_score >= {MIN_FIT_SCORE})")
