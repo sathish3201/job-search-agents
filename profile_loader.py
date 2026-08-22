@@ -8,9 +8,58 @@ resume edit"."""
 from __future__ import annotations
 
 import os
+import re
+from datetime import date
 
 from cache import SqliteCache, content_hash
 from models import CandidateProfile
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# Matches "Oct 2024 — Aug 2026", "Oct 2024 - Present", etc. — the em-dash/
+# hyphen/en-dash variants and optional "Present"/"Current" end date.
+_DATE_RANGE_RE = re.compile(
+    r"([A-Za-z]{3,9})\.?\s+(\d{4})\s*[-–—]\s*(?:([A-Za-z]{3,9})\.?\s+(\d{4})|(Present|Current))",
+    re.IGNORECASE,
+)
+
+
+def _years_experience_from_dates(resume_text: str) -> float | None:
+    """Deterministic fallback/override for YEARS_EXPERIENCE: small local
+    models are unreliable at date arithmetic (confirmed by a real bug — one
+    run reported "2.6 years" for an Oct 2024-Aug 2026 role, which is
+    actually ~1.8-2 years). Parses the widest employment date range
+    literally stated in the resume and computes years from it directly,
+    rather than trusting the LLM's math. Returns None if no date range is
+    found, so the caller falls back to whatever the LLM extracted."""
+    spans = []
+    for m in _DATE_RANGE_RE.finditer(resume_text):
+        start_month_name, start_year, end_month_name, end_year, present = m.groups()
+        start_month = _MONTHS.get(start_month_name[:3].lower())
+        if start_month is None:
+            continue
+        start = date(int(start_year), start_month, 1)
+
+        if present:
+            end = date.today()
+        else:
+            end_month = _MONTHS.get(end_month_name[:3].lower())
+            if end_month is None:
+                continue
+            end = date(int(end_year), end_month, 1)
+
+        if end >= start:
+            spans.append((start, end))
+
+    if not spans:
+        return None
+
+    earliest_start = min(s for s, _ in spans)
+    latest_end = max(e for _, e in spans)
+    months = (latest_end.year - earliest_start.year) * 12 + (latest_end.month - earliest_start.month)
+    return round(months / 12, 1)
 
 
 def load_resume_text(path: str | None = None) -> str:
@@ -41,7 +90,11 @@ NAME: <full name>
 HEADLINE: <current professional title/headline, one line>
 SUMMARY: <2-3 sentence summary of their background>
 SKILLS: <comma-separated list of their top 10-15 technical skills>
-YEARS_EXPERIENCE: <a number, e.g. 1.6>
+YEARS_EXPERIENCE: <total years of professional experience, as a whole or
+  one-decimal number. Compute this from the actual employment date ranges
+  stated in the resume (e.g. "Oct 2024 - Aug 2026" is about 1.8-2 years) —
+  do not guess or invent a number, and do not copy any example number from
+  these instructions.>
 TARGET_ROLES: <comma-separated list of 2-4 job titles they should be searching for>
 
 Resume:
@@ -68,6 +121,12 @@ Resume:
         years = float("".join(c for c in fields["YEARS_EXPERIENCE"] if c.isdigit() or c == "."))
     except ValueError:
         years = 0.0
+
+    # Deterministic override: trust literal date-range math over the LLM's
+    # arithmetic whenever a real date range is found in the resume text.
+    years_from_dates = _years_experience_from_dates(resume_text)
+    if years_from_dates is not None:
+        years = years_from_dates
 
     profile = CandidateProfile(
         name=fields["NAME"],

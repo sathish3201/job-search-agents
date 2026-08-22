@@ -65,9 +65,15 @@ class Application(BaseModel):
     job: JobListing
     status: ApplicationStatus = ApplicationStatus.FOUND
     fit_score: Optional[int] = None
+    ats_score: Optional[int] = None
     applied_date: Optional[date] = None
     last_updated: date = Field(default_factory=date.today)
     notes: list[str] = Field(default_factory=list)
+    # Set when the user rejects a job from the review dashboard — REJECTED
+    # already existed for recruiter-side rejection, so this is a separate
+    # boolean rather than overloading that enum value with two different
+    # meanings (recruiter said no vs. user chose not to apply).
+    discarded_by_user: bool = False
 
     def record_event(self, status: ApplicationStatus, note: str = "") -> None:
         self.status = status
