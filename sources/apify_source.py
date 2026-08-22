@@ -23,6 +23,8 @@ from cache import SqliteCache, content_hash
 from models import JobListing
 from sources.base import JobSource
 
+_SLOW_CALL_SECONDS = 3.0
+
 # How long a cached Apify scrape result stays valid before a repeat search
 # re-runs the actor. Job listings go stale fast (postings close), but Apify
 # actor runs cost real credits, so a same-day repeat run within this window
@@ -83,18 +85,23 @@ def _linkedin_run_input(query: str, location: str, limit: int) -> dict:
 
 def _naukri_run_input(query: str, location: str, limit: int) -> dict:
     """Verified against muhammetakkurtt/naukri-job-scraper's actual input
-    schema (required: maxJobs; keyword/cities are optional filters). Two
-    real constraints confirmed by actual failed calls, not documented in
-    the schema's field descriptions:
+    schema (required: maxJobs; keyword/cities are optional filters). Real
+    constraints confirmed by actual calls, not documented in the schema's
+    field descriptions:
       - maxJobs must be >= 50 server-side.
       - cities takes Naukri's internal numeric location-ID codes, not free-
         text city names — passing "India" or "Bengaluru" directly gets
-        rejected. There's no public id-lookup table shipped with the actor,
-        so rather than guess wrong IDs, location filtering is left to
-        `keyword` (folding the location into the search text) instead of
-        the cities parameter."""
-    keyword = f"{query} {location}".strip() if location else query
-    return {"maxJobs": max(limit, 50), "keyword": keyword}
+        rejected. There's no public id-lookup table shipped with the actor.
+      - keyword must stay a clean, unmodified search phrase — folding
+        location into it (e.g. "AI Engineer Hyderabad, India") was
+        confirmed by a real side-by-side test to silently degrade results
+        to generic/unrelated postings (47,327 correctly-matched results
+        for "AI Engineer" alone vs. Java/SAP/voice-process noise once
+        location text was appended). Location is dropped rather than
+        risk-fed into keyword; this actor has no working location filter
+        given the cities-ID constraint above, so results are unfiltered by
+        location until a custom scraper replaces this actor."""
+    return {"maxJobs": max(limit, 50), "keyword": query}
 
 
 # Maps actor_id -> a function building that actor's specific run input.
@@ -178,6 +185,8 @@ class ApifyJobSource(JobSource):
             )
         run_input = build_input(query, location, limit)
 
+        call_start = time.time()
+        print(f"[apify] {target.label} ({target.actor_id}): actor run starting...", flush=True)
         try:
             run = client.actor(target.actor_id).call(run_input=run_input)
             # apify-client's Run is a pydantic model (attribute access), not
@@ -185,8 +194,18 @@ class ApifyJobSource(JobSource):
             # (TypeError: 'Run' object is not subscriptable). run["..."]
             # would have raised on every single successful actor call.
             items = list(client.dataset(run.default_dataset_id).iterate_items())
+            elapsed = time.time() - call_start
+            tag = "SLOW" if elapsed > _SLOW_CALL_SECONDS else "ok"
+            print(
+                f"[apify] {target.label} ({target.actor_id}): actor run took {elapsed:.1f}s [{tag}]",
+                flush=True,
+            )
         except Exception as e:
-            print(f"[apify] {target.label} ({target.actor_id}) run failed: {e}", flush=True)
+            elapsed = time.time() - call_start
+            print(
+                f"[apify] {target.label} ({target.actor_id}) run FAILED after {elapsed:.1f}s: {e}",
+                flush=True,
+            )
             return []
 
         jobs = [self._normalize(item, target) for item in items[:limit]]

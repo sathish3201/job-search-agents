@@ -11,6 +11,7 @@ import os
 import re
 from datetime import date
 
+from agents.ats_checker import _SKILL_VOCABULARY
 from cache import SqliteCache, content_hash
 from models import CandidateProfile
 
@@ -128,11 +129,35 @@ Resume:
     if years_from_dates is not None:
         years = years_from_dates
 
+    skills = [s.strip() for s in fields["SKILLS"].split(",") if s.strip()]
+    if not skills:
+        # Confirmed real failure mode (not hypothetical): a live run
+        # against qwen2.5:3b produced a response that skipped the SKILLS
+        # line entirely (jumped straight from SUMMARY to YEARS_EXPERIENCE)
+        # despite the prompt asking for it — the model doesn't always fail
+        # loudly, it can just omit a field it finds harder to answer. An
+        # empty skills list is worse than a merely imperfect one: every
+        # downstream ranking prompt renders "Skills: ." with nothing to
+        # match against, which was traced to a real bug in
+        # agents/ranker.py (the LLM degenerating into bare digits for
+        # MATCHING_SKILLS/MISSING_SKILLS when given nothing to match).
+        # Deterministic fallback: extract skills directly from the resume
+        # text via the same skill taxonomy agents/ats_checker.py already
+        # uses for keyword matching (reused, not duplicated — one skill
+        # vocabulary for the whole project, not two that can drift apart).
+        resume_lower = resume_text.lower()
+        skills = [kw for kw in _SKILL_VOCABULARY if kw in resume_lower][:15]
+        print(
+            f"[profile_loader] LLM omitted SKILLS field — fell back to "
+            f"{len(skills)} skills extracted from resume text via keyword match",
+            flush=True,
+        )
+
     profile = CandidateProfile(
         name=fields["NAME"],
         headline=fields["HEADLINE"],
         summary=fields["SUMMARY"],
-        skills=[s.strip() for s in fields["SKILLS"].split(",") if s.strip()],
+        skills=skills,
         years_experience=years,
         target_roles=[r.strip() for r in fields["TARGET_ROLES"].split(",") if r.strip()],
         resume_raw_text=resume_text,

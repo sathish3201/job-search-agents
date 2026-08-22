@@ -29,7 +29,9 @@ containing the logic inline — the graph's only job is orchestration.
 """
 from __future__ import annotations
 
+import functools
 import operator
+import time
 from typing import Annotated
 
 from pydantic import BaseModel
@@ -51,6 +53,57 @@ MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown
 ATS_FRONTEND_THRESHOLD = 75  # only jobs scoring >= this on ATS keyword match are shown in the UI
 REMOTIVE_SEARCH_LIMIT = 9  # keep the fastest source capped so a run has fewer jobs to rank overall
 DEFAULT_SEARCH_LIMIT = 15  # other sources (Apify, Adzuna, etc.) keep the previous cap
+
+# Anything slower than this gets an explicit "still running" style timing
+# line — the whole point is that neither the user nor the operator should
+# ever wonder "is this stuck?" for more than a few seconds without a log
+# line telling them what's in flight and how long it's taken so far.
+SLOW_CALL_THRESHOLD_SECONDS = 3.0
+
+
+def _timed(label: str):
+    """Wraps a call, printing how long it took, AND pushing the same status
+    through _stage_hook so the frontend (which polls run_state.progress,
+    fed by this hook) shows live per-step timing too, not just the CLI/
+    server log. Anything over SLOW_CALL_THRESHOLD_SECONDS gets flagged
+    explicitly so a slow-but-working step (LLM tunnel latency, an Apify
+    actor run, a Playwright render) is visibly distinguished from a hang,
+    for both the person watching the terminal and the person watching the
+    dashboard."""
+    start = time.time()
+    print(f"[timing] {label}: starting...", flush=True)
+    if _stage_hook:
+        _stage_hook(f"{label}: running...")
+
+    def _done(extra: str = ""):
+        elapsed = time.time() - start
+        tag = "SLOW" if elapsed > SLOW_CALL_THRESHOLD_SECONDS else "ok"
+        suffix = f" — {extra}" if extra else ""
+        print(f"[timing] {label}: done in {elapsed:.1f}s [{tag}]{suffix}", flush=True)
+        if _stage_hook:
+            slow_note = " (slow)" if tag == "SLOW" else ""
+            _stage_hook(f"{label}: done in {elapsed:.1f}s{slow_note}{suffix}")
+        return elapsed
+
+    return _done
+
+
+def timed_stage(label: str):
+    """Decorator for graph nodes: logs start/end + elapsed time around the
+    whole node, on top of whatever the node already prints internally."""
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(state):
+            done = _timed(f"node:{label}")
+            try:
+                return fn(state)
+            finally:
+                done()
+
+        return wrapper
+
+    return decorator
 
 # Optional hooks, set by api/pipeline_runner.py before invoking the graph, so
 # individual nodes can report live progress. Not LangGraph state fields
@@ -102,6 +155,7 @@ class PipelineState(BaseModel):
     profile_drafts: list[ProfileDraft] = []
 
 
+@timed_stage("search_jobs")
 def search_jobs_node(state: PipelineState) -> dict:
     print("[search_jobs] starting", flush=True)
     sources = active_sources()
@@ -113,14 +167,14 @@ def search_jobs_node(state: PipelineState) -> dict:
     for src in sources:
         if _stage_hook:
             _stage_hook(f"Searching {src.name}")
-        print(f"[search_jobs] calling {src.name}...", flush=True)
         # Remotive capped lower than other sources: it's the fastest, always-on
         # source with no rate/cost concern, but a smaller cap here means fewer
         # jobs overall to rank per run, which is the actual lever for making a
         # full run finish faster against the slow LLM ranking step.
         limit = REMOTIVE_SEARCH_LIMIT if src.name == "remotive" else DEFAULT_SEARCH_LIMIT
+        done = _timed(f"source:{src.name}")
         jobs = src.search(state.query, state.location, state.remote_ok, limit=limit)
-        print(f"[search_jobs] {src.name}: {len(jobs)} results", flush=True)
+        done(f"{len(jobs)} results")
         all_jobs.extend(jobs)
 
     # De-duplicate across sources by (title, company) as a cheap heuristic,
@@ -176,6 +230,7 @@ def _persist_if_qualifying(ranked: RankedJob, profile: CandidateProfile) -> None
         _live_job_hook(ranked)
 
 
+@timed_stage("rank_jobs")
 def rank_jobs_node(state: PipelineState) -> dict:
     """LLM-scores every raw job, via LLMRanker (agents/ranker.py), which itself
     is cached per (job, resume) hash in SQLite — a repeat run over the same
@@ -189,7 +244,20 @@ def rank_jobs_node(state: PipelineState) -> dict:
     if _stage_hook:
         _stage_hook(f"Ranking {len(state.raw_jobs)} jobs")
 
+    rank_start = time.time()
+
     def on_ranked(ranked_job: RankedJob) -> None:
+        elapsed = time.time() - rank_start
+        tag = "SLOW" if elapsed > SLOW_CALL_THRESHOLD_SECONDS else "ok"
+        title = ranked_job.job.title[:50]
+        print(
+            f"[timing] rank_job: {title!r} scored "
+            f"fit={ranked_job.fit_score} at t={elapsed:.1f}s [{tag}]",
+            flush=True,
+        )
+        if _stage_hook:
+            slow_note = " (slow LLM call)" if tag == "SLOW" else ""
+            _stage_hook(f"Ranked {title!r} — fit={ranked_job.fit_score}{slow_note}")
         _persist_if_qualifying(ranked_job, state.profile)
 
     ranked = _ranker.rank_all(
@@ -201,6 +269,7 @@ def rank_jobs_node(state: PipelineState) -> dict:
     return {"ranked_jobs": ranked}
 
 
+@timed_stage("ats_check_jobs")
 def ats_check_jobs_node(state: PipelineState) -> dict:
     """Filters ranked_jobs down to ats_passed_jobs. The ATS check itself
     already ran per-job inside _persist_if_qualifying (streamed live to the
@@ -223,6 +292,7 @@ def ats_check_jobs_node(state: PipelineState) -> dict:
     return {"ats_passed_jobs": passed}
 
 
+@timed_stage("update_tracker")
 def update_tracker_node(state: PipelineState) -> dict:
     store = ApplicationStore()
     seen = store.seen_keys()
@@ -245,6 +315,7 @@ def update_tracker_node(state: PipelineState) -> dict:
     return {"new_applications": new_apps}
 
 
+@timed_stage("draft_profile_updates")
 def draft_profile_updates_node(state: PipelineState) -> dict:
     """Looks at top-ranked jobs' required skills vs. the candidate's profile and
     drafts headline/summary suggestions. SAFE MODE ONLY: this writes suggestions

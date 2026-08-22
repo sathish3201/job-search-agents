@@ -4,12 +4,19 @@ SQLite cache in front so re-running the pipeline never re-scores a job it has
 already scored against the same resume text."""
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 from cache import SqliteCache, content_hash
 from llm import get_llm
 from models import CandidateProfile, JobListing, RankedJob
+
+# Any single LLM call slower than this gets flagged in the log — this is
+# the actual bottleneck in a full pipeline run (one round-trip per job
+# through a possibly-slow ngrok tunnel), so per-call visibility here is
+# what actually answers "why is this taking so long".
+_SLOW_LLM_CALL_SECONDS = 3.0
 
 ProgressCallback = Callable[[int, int], None]  # (done, total) -> None
 RankedCallback = Callable[[RankedJob], None]  # fires the instant one job finishes
@@ -23,6 +30,24 @@ def _looks_like_unfilled_placeholder(text: str) -> bool:
     skill name or pitch sentence."""
     stripped = text.strip()
     return stripped.startswith("<") and stripped.endswith(">")
+
+
+def _looks_degenerate(matching_raw: str, missing_raw: str) -> bool:
+    """Confirmed real failure mode (not hypothetical): the same exact
+    prompt against the same model, run twice back-to-back, produced
+    "MATCHING_SKILLS: 1" / "MISSING_SKILLS: 2,3,4,5" on one run (bare
+    digits instead of real skill names — the model degenerated into
+    list-numbering instead of content) and a normal comma-separated skill
+    list on the other. This is sampling-variance flakiness on a small
+    local model, not a systematic prompt problem — a garbled skills line
+    is grounds to retry the whole call once rather than trust the SCORE
+    that came with it, since a run that garbles the easy part of the
+    format is not a run worth trusting on the harder part either."""
+    combined = f"{matching_raw},{missing_raw}"
+    items = [i.strip() for i in combined.split(",") if i.strip()]
+    if not items:
+        return False
+    return all(item.isdigit() for item in items)
 
 
 def _clean_skill_list(raw: str, max_items: int = 8) -> list[str]:
@@ -43,6 +68,19 @@ def _clean_skill_list(raw: str, max_items: int = 8) -> list[str]:
         if len(seen) >= max_items:
             break
     return seen
+
+
+def _extract_raw_skill_lines(resp: str) -> tuple[str, str]:
+    """Pulls the unparsed MATCHING_SKILLS/MISSING_SKILLS line contents,
+    for _looks_degenerate to inspect before _clean_skill_list's dedup/
+    placeholder-filtering would otherwise obscure a bare-digits response."""
+    matching, missing = "", ""
+    for line in resp.splitlines():
+        if line.startswith("MATCHING_SKILLS:"):
+            matching = line.split(":", 1)[1]
+        elif line.startswith("MISSING_SKILLS:"):
+            missing = line.split(":", 1)[1]
+    return matching, missing
 
 
 def _parse_ranking_response(resp: str) -> dict:
@@ -104,24 +142,57 @@ MATCHING_SKILLS: <up to 5, comma-separated>
 MISSING_SKILLS: <up to 5, comma-separated>
 PITCH: <1-2 sentences, first person, why this candidate fits>
 """
-        try:
-            resp = llm.invoke(prompt).content
-        except Exception as e:
-            # A stuck/failed connection to the LLM backend (e.g. a stalled
-            # ngrok tunnel) must not take the whole batch down with it —
-            # one job fails to rank, the rest still get a fair shot. Not
-            # cached, so a transient failure gets retried on the next run.
-            print(f"[ranker] {job.title} @ {job.company}: LLM call failed ({e}); scoring 0", flush=True)
-            return RankedJob(
-                job=job,
-                fit_score=0,
-                reasoning=f"Ranking failed: {e}",
-                matching_skills=[],
-                missing_skills=[],
-                tailored_pitch="",
+        # Up to 2 attempts: a real side-by-side test found the exact same
+        # prompt against the same model non-deterministically degenerating
+        # into bare digits for MATCHING_SKILLS/MISSING_SKILLS on one run
+        # ("1" / "2,3,4,5") and clean output on the next — sampling
+        # variance on a small local model, not a systematic prompt issue.
+        # A garbled skills line is grounds to distrust the whole response
+        # (including SCORE) and retry once rather than silently keep a
+        # fit_score computed by a run that degenerated on the easy part of
+        # the format.
+        resp = None
+        parsed = None
+        for attempt in range(2):
+            call_start = time.time()
+            print(f"[ranker] calling LLM for {job.title!r} @ {job.company!r} (attempt {attempt + 1})...", flush=True)
+            try:
+                resp = llm.invoke(prompt).content
+                elapsed = time.time() - call_start
+                tag = "SLOW" if elapsed > _SLOW_LLM_CALL_SECONDS else "ok"
+                print(f"[ranker] LLM call for {job.title!r} took {elapsed:.1f}s [{tag}]", flush=True)
+            except Exception as e:
+                elapsed = time.time() - call_start
+                # A stuck/failed connection to the LLM backend (e.g. a
+                # stalled ngrok tunnel) must not take the whole batch down
+                # with it — one job fails to rank, the rest still get a
+                # fair shot. Not cached, so a transient failure gets
+                # retried on the next run.
+                print(
+                    f"[ranker] LLM call for {job.title!r} FAILED after {elapsed:.1f}s: {e}; scoring 0",
+                    flush=True,
+                )
+                return RankedJob(
+                    job=job,
+                    fit_score=0,
+                    reasoning=f"Ranking failed: {e}",
+                    matching_skills=[],
+                    missing_skills=[],
+                    tailored_pitch="",
+                )
+
+            parsed = _parse_ranking_response(resp)
+            raw_matching, raw_missing = _extract_raw_skill_lines(resp)
+            if not _looks_degenerate(raw_matching, raw_missing):
+                break
+            print(
+                f"[ranker] {job.title!r}: degenerate skill list detected "
+                f"(matching={raw_matching!r}, missing={raw_missing!r}) — retrying"
+                if attempt == 0 else
+                f"[ranker] {job.title!r}: still degenerate after retry, keeping this result",
+                flush=True,
             )
 
-        parsed = _parse_ranking_response(resp)
         self._cache.set(cache_key, {**parsed, "reasoning": resp})
 
         return RankedJob(

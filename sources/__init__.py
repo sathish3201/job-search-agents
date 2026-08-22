@@ -4,8 +4,15 @@ from sources.apify_source import ApifyJobSource
 from sources.base import JobSource
 from sources.jsearch import JSearchSource
 from sources.remotive import RemotiveSource
+from sources.scraper_service_source import ScraperServiceSource
 
-ALL_SOURCES: list[JobSource] = [AdzunaSource(), JSearchSource(), RemotiveSource(), ApifyJobSource()]
+ALL_SOURCES: list[JobSource] = [
+    AdzunaSource(),
+    JSearchSource(),
+    RemotiveSource(),
+    ApifyJobSource(),
+    ScraperServiceSource(),
+]
 
 
 def active_sources() -> list[JobSource]:
