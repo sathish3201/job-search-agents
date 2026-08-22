@@ -152,6 +152,12 @@ export default function Dashboard() {
   const [tailoringKey, setTailoringKey] = useState(null);
   const [tailoring, setTailoring] = useState(null);
   const [tailorError, setTailorError] = useState("");
+  // Separate from `tailoring` on purpose: the API can legitimately return
+  // null (no truthful ATS improvement found), and null is also `tailoring`'s
+  // untouched initial value — without this flag, panelOpen couldn't tell
+  // "haven't tailored anything yet" apart from "tailored, backend said null",
+  // and the panel would silently never open for that valid response.
+  const [hasTailored, setHasTailored] = useState(false);
 
   const loadResult = async () => {
     try {
@@ -193,9 +199,11 @@ export default function Dashboard() {
     setTailoringKey(dedupeKey);
     setTailoring(null);
     setTailorError("");
+    setHasTailored(false);
     try {
       const result = await api.tailorResume(dedupeKey);
       setTailoring(result); // null is a valid response — "no truthful improvement"
+      setHasTailored(true);
     } catch (err) {
       setTailorError(err.message || "Could not tailor resume for this job.");
     } finally {
@@ -204,7 +212,7 @@ export default function Dashboard() {
   };
 
   const sorted = [...jobs].sort((a, b) => b.fit_score - a.fit_score);
-  const panelOpen = tailoringKey !== null || tailoring !== null || tailorError !== "";
+  const panelOpen = tailoringKey !== null || hasTailored || tailorError !== "";
 
   return (
     <div className={panelOpen ? "layout-with-panel" : ""}>
@@ -246,6 +254,7 @@ export default function Dashboard() {
           onClose={() => {
             setTailoring(null);
             setTailorError("");
+            setHasTailored(false);
           }}
         />
       )}
