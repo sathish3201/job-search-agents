@@ -38,6 +38,15 @@ class RankedJob(BaseModel):
     missing_skills: list[str] = Field(default_factory=list)
     tailored_pitch: str = ""  # one-paragraph "why me" for this specific job
 
+    # ATS (keyword-matching) score — a different signal from fit_score:
+    # fit_score is the LLM's judgment of overall fit, ats_score is "would a
+    # literal keyword-scanning ATS pass this resume through" for this job.
+    # See agents/ats_checker.py.
+    ats_score: int = Field(default=0, ge=0, le=100)
+    ats_keywords_found: list[str] = Field(default_factory=list)
+    ats_keywords_missing: list[str] = Field(default_factory=list)
+    ats_recommendation: str = ""
+
 
 class ApplicationStatus(str, Enum):
     FOUND = "found"
@@ -87,3 +96,21 @@ class ProfileDraft(BaseModel):
     summary: str
     reasoning: str
     based_on_trend: str = ""  # what recruiter-action pattern triggered this suggestion
+
+
+class TailoredResume(BaseModel):
+    """An ATS-optimized resume summary/headline draft for a specific target
+    job title, iteratively tuned by inserting truthful missing keywords
+    until the deterministic ATS score clears the target threshold (see
+    agents/ats_checker.py's iterate-to-target loop). Never a full resume
+    rewrite — only the summary/headline, since that's what's safe to draft
+    without risking fabricated experience claims elsewhere in the resume."""
+
+    target_title: str
+    based_on_job_url: str
+    original_ats_score: int
+    final_ats_score: int
+    tailored_headline: str
+    tailored_summary: str
+    keywords_added: list[str] = Field(default_factory=list)
+    reasoning: str

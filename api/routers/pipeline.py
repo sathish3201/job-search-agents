@@ -27,6 +27,7 @@ def get_status():
 def get_result():
     return RunResult(
         ranked_jobs=run_state.ranked_jobs,
+        ats_passed_jobs=run_state.ats_passed_jobs,
         profile_drafts=run_state.profile_drafts,
         new_applications_count=run_state.new_applications_count,
     )

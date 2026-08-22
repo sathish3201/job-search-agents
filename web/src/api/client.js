@@ -28,4 +28,10 @@ export const api = {
   getProfileDrafts: () => request("/api/profile/drafts"),
 
   getImprovement: () => request("/api/improvement"),
+
+  tailorResume: (dedupeKey) =>
+    request("/api/jobs/tailor-resume", {
+      method: "POST",
+      body: JSON.stringify({ dedupe_key: dedupeKey }),
+    }),
 };

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from models import Application, CandidateProfile, ProfileDraft, RankedJob
+from models import Application, CandidateProfile, ProfileDraft, RankedJob, TailoredResume
 
 
 class RunStatus(BaseModel):
@@ -14,8 +14,16 @@ class RunStatus(BaseModel):
 
 class RunResult(BaseModel):
     ranked_jobs: list[RankedJob]
+    # Jobs shown on the dashboard: cleared both fit_score and the ATS
+    # keyword-match threshold. ranked_jobs is the superset, kept for the
+    # improvement report and application tracker.
+    ats_passed_jobs: list[RankedJob]
     profile_drafts: list[ProfileDraft]
     new_applications_count: int
+
+
+class TailorResumeRequest(BaseModel):
+    dedupe_key: str  # identifies which job in ats_passed_jobs to tailor for
 
 
 class ApplicationUpdate(BaseModel):

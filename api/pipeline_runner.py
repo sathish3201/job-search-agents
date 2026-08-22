@@ -36,6 +36,7 @@ def run_pipeline_job() -> None:
 
         run_state.set_done(
             ranked_jobs=result["ranked_jobs"],
+            ats_passed_jobs=result["ats_passed_jobs"],
             profile_drafts=result["profile_drafts"],
             profile=profile,
             new_applications_count=len(result["new_applications"]),

@@ -1,8 +1,17 @@
-"""The main LangGraph pipeline wiring together search -> rank -> track -> profile-draft.
+"""The main LangGraph pipeline wiring together search -> rank -> ATS-check -> track -> profile-draft.
 
 Flow:
     search_jobs -> rank_jobs (cached LLM scoring, parallel per job) ->
+    ats_check_jobs (deterministic keyword match, filters to what's shown) ->
     update_tracker -> draft_profile_updates -> END
+
+Resume tailoring (agents/ats_checker.tailor_resume_for_target) is NOT part
+of this automatic pipeline — it's on-demand, triggered per job by the user
+clicking "Tailor Resume" on a specific job card (see
+api/routers/tailor.py), not run automatically for every job on every
+search. Tailoring is an LLM call per attempt (up to 3 attempts to reach
+ATS_TARGET_SCORE); running it unconditionally for every ranked job on every
+search would be pure waste when the user only cares about 1-2 of them.
 
 There was previously an embedding-based shortlist step (fastembed) between
 search and rank, meant to cut LLM calls by pre-filtering to the top-K most
@@ -27,6 +36,7 @@ from pydantic import BaseModel
 
 from langgraph.graph import StateGraph, START, END
 
+from agents.ats_checker import run_ats_check
 from agents.ranker import LLMRanker
 from cache import SqliteCache
 from llm import get_llm
@@ -38,6 +48,7 @@ _cache = SqliteCache()
 _ranker = LLMRanker(cache=_cache)
 
 MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown, not tracked
+ATS_FRONTEND_THRESHOLD = 75  # only jobs scoring >= this on ATS keyword match are shown in the UI
 
 # Optional hooks, set by api/pipeline_runner.py before invoking the graph, so
 # individual nodes can report live progress. Not LangGraph state fields
@@ -69,6 +80,13 @@ class PipelineState(BaseModel):
 
     raw_jobs: list[JobListing] = []
     ranked_jobs: Annotated[list[RankedJob], operator.add] = []
+    # Separate field, not filtered in place: ranked_jobs uses operator.add as
+    # its reducer (concatenates rather than replaces across node returns), so
+    # a node that wants to narrow the list down — ats_check_jobs_node
+    # filtering to ATS_FRONTEND_THRESHOLD — must write to its own field
+    # instead of returning a smaller ranked_jobs and accidentally
+    # concatenating onto the original.
+    ats_passed_jobs: list[RankedJob] = []
     new_applications: list[Application] = []
     profile_drafts: list[ProfileDraft] = []
 
@@ -148,6 +166,40 @@ def rank_jobs_node(state: PipelineState) -> dict:
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
     print(f"[rank_jobs] {before} ranked -> {len(ranked)} kept (fit_score >= {MIN_FIT_SCORE})")
     return {"ranked_jobs": ranked}
+
+
+def ats_check_jobs_node(state: PipelineState) -> dict:
+    """Runs the deterministic ATS keyword check (agents/ats_checker.py)
+    against every job that already cleared MIN_FIT_SCORE, filtering down to
+    only jobs at or above ATS_FRONTEND_THRESHOLD into ats_passed_jobs --
+    that's what the frontend actually displays, not the full ranked_jobs
+    list. A job can be a strong LLM-judged fit (fit_score) but still fail
+    here if the resume never uses the literal keywords a real ATS scans
+    for; that's the whole point of a separate check. No LLM call unless a
+    job has missing keywords (see ats_checker.run_ats_check's own
+    short-circuit)."""
+    if not state.ranked_jobs:
+        return {"ats_passed_jobs": []}
+
+    if _stage_hook:
+        _stage_hook(f"ATS-checking {len(state.ranked_jobs)} jobs")
+
+    passed = []
+    for r in state.ranked_jobs:
+        ats = run_ats_check(r.job, state.profile)
+        r.ats_score = ats.ats_score
+        r.ats_keywords_found = ats.keywords_found
+        r.ats_keywords_missing = ats.keywords_missing
+        r.ats_recommendation = ats.recommendation
+        if ats.ats_score >= ATS_FRONTEND_THRESHOLD:
+            passed.append(r)
+
+    print(
+        f"[ats_check] {len(state.ranked_jobs)} ranked -> {len(passed)} kept "
+        f"(ats_score >= {ATS_FRONTEND_THRESHOLD})",
+        flush=True,
+    )
+    return {"ats_passed_jobs": passed}
 
 
 def update_tracker_node(state: PipelineState) -> dict:
@@ -237,12 +289,14 @@ def build_graph():
     builder = StateGraph(PipelineState)
     builder.add_node("search_jobs", search_jobs_node)
     builder.add_node("rank_jobs", rank_jobs_node)
+    builder.add_node("ats_check_jobs", ats_check_jobs_node)
     builder.add_node("update_tracker", update_tracker_node)
     builder.add_node("draft_profile_updates", draft_profile_updates_node)
 
     builder.add_edge(START, "search_jobs")
     builder.add_edge("search_jobs", "rank_jobs")
-    builder.add_edge("rank_jobs", "update_tracker")
+    builder.add_edge("rank_jobs", "ats_check_jobs")
+    builder.add_edge("ats_check_jobs", "update_tracker")
     builder.add_edge("update_tracker", "draft_profile_updates")
     builder.add_edge("draft_profile_updates", END)
 
