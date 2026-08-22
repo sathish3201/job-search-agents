@@ -31,6 +31,19 @@ class ApplicationUpdate(BaseModel):
     note: str = ""
 
 
+class ApplyRequest(BaseModel):
+    # Explicit typed confirmation, mirroring agents/automation.py's CLI
+    # confirmation-phrase pattern — a click alone isn't enough friction for
+    # an action this risky (real submission under the user's name).
+    confirmation_phrase: str
+
+
+class ApplyResponse(BaseModel):
+    success: bool
+    message: str
+    applied_url: str = ""
+
+
 class SkillGap(BaseModel):
     skill: str
     frequency: int  # how many top jobs listed this as missing

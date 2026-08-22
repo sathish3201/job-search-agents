@@ -100,10 +100,13 @@ function TailoredResumePanel({ tailoring, loading, error, onClose }) {
   );
 }
 
-function JobCard({ ranked, onTailor, tailoringKey }) {
+function JobCard({ ranked, onTailor, tailoringKey, onApply, onDiscard, applyState }) {
   const { job, fit_score, ats_score, matching_skills, missing_skills, tailored_pitch } = ranked;
   const dedupeKey = `${job.source}:${job.external_id}`;
   const isTailoring = tailoringKey === dedupeKey;
+  const state = applyState[dedupeKey] || {};
+
+  if (state.discarded) return null; // discarded jobs drop out of the list immediately
 
   return (
     <div className="card">
@@ -130,6 +133,11 @@ function JobCard({ ranked, onTailor, tailoringKey }) {
         </div>
       </div>
       {tailored_pitch && <p className="pitch">{tailored_pitch}</p>}
+      {state.result && (
+        <p className={state.result.success ? "apply-success" : "apply-note"}>
+          {state.result.message}
+        </p>
+      )}
       <div className="card-actions">
         <a href={job.url} target="_blank" rel="noreferrer" className="link-btn">
           View posting →
@@ -137,6 +145,63 @@ function JobCard({ ranked, onTailor, tailoringKey }) {
         <button onClick={() => onTailor(dedupeKey)} disabled={isTailoring} className="secondary-btn">
           {isTailoring ? "Tailoring…" : "Tailor Resume"}
         </button>
+        {!state.result?.success && (
+          <>
+            <button
+              onClick={() => onApply(dedupeKey, job)}
+              disabled={state.applying}
+              className="primary-btn"
+              title="Opens a real browser on the machine running this dashboard's backend — only works when that's your local machine"
+            >
+              {state.applying ? "Opening browser…" : "Apply"}
+            </button>
+            <button onClick={() => onDiscard(dedupeKey)} className="secondary-btn">
+              Discard
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ApplyConfirmModal({ job, onConfirm, onCancel, submitting }) {
+  const [phrase, setPhrase] = useState("");
+  const REQUIRED = "I ACCEPT THE BAN RISK";
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Apply to {job.title} at {job.company}?</h3>
+        <p className="muted">
+          This opens a real browser on the machine running the backend and submits (or opens for
+          manual completion) a real application under your account. LinkedIn/most job boards
+          prohibit automated applications — accounts used for this can be flagged or banned. This
+          only works if the dashboard is pointed at your own locally-running backend, not the
+          deployed one (no headless server can solve a CAPTCHA for you).
+        </p>
+        <p>
+          Type <code>{REQUIRED}</code> to confirm:
+        </p>
+        <input
+          type="text"
+          value={phrase}
+          onChange={(e) => setPhrase(e.target.value)}
+          className="confirm-input"
+          autoFocus
+        />
+        <div className="modal-actions">
+          <button onClick={onCancel} className="secondary-btn" disabled={submitting}>
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(phrase)}
+            disabled={phrase !== REQUIRED || submitting}
+            className="primary-btn"
+          >
+            {submitting ? "Applying…" : "Confirm & Apply"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -164,6 +229,13 @@ export default function Dashboard() {
   // "haven't tailored anything yet" apart from "tailored, backend said null",
   // and the panel would silently never open for that valid response.
   const [hasTailored, setHasTailored] = useState(false);
+
+  // Keyed by dedupeKey: { applying: bool, result: {success, message} | null,
+  // discarded: bool }. Kept separate from the job objects themselves since
+  // apply/discard state is UI-session state, not part of what the pipeline
+  // returns.
+  const [applyState, setApplyState] = useState({});
+  const [pendingApply, setPendingApply] = useState(null); // {dedupeKey, job} | null — drives the confirm modal
 
   const loadResult = async () => {
     try {
@@ -236,6 +308,40 @@ export default function Dashboard() {
     }
   };
 
+  const handleApplyClick = (dedupeKey, job) => {
+    setPendingApply({ dedupeKey, job });
+  };
+
+  const handleApplyConfirm = async (confirmationPhrase) => {
+    const { dedupeKey } = pendingApply;
+    setApplyState((prev) => ({ ...prev, [dedupeKey]: { ...prev[dedupeKey], applying: true } }));
+    try {
+      const result = await api.applyToJob(dedupeKey, confirmationPhrase);
+      setApplyState((prev) => ({ ...prev, [dedupeKey]: { applying: false, result } }));
+    } catch (err) {
+      setApplyState((prev) => ({
+        ...prev,
+        [dedupeKey]: {
+          applying: false,
+          result: { success: false, message: err.message || "Apply request failed." },
+        },
+      }));
+    } finally {
+      setPendingApply(null);
+    }
+  };
+
+  const handleDiscard = async (dedupeKey) => {
+    setApplyState((prev) => ({ ...prev, [dedupeKey]: { ...prev[dedupeKey], discarded: true } }));
+    try {
+      await api.discardApplication(dedupeKey);
+    } catch {
+      // Already reflected optimistically in the UI; a failed PATCH here
+      // just means the tracker file wasn't updated — not worth reverting
+      // the UI over, the job is still gone from view either way.
+    }
+  };
+
   const sorted = [...jobs].sort((a, b) => b.fit_score - a.fit_score);
   const panelOpen = tailoringKey !== null || hasTailored || tailorError !== "";
 
@@ -276,6 +382,9 @@ export default function Dashboard() {
                 ranked={r}
                 onTailor={handleTailor}
                 tailoringKey={tailoringKey}
+                onApply={handleApplyClick}
+                onDiscard={handleDiscard}
+                applyState={applyState}
               />
             ))}
           </div>
@@ -292,6 +401,15 @@ export default function Dashboard() {
             setTailorError("");
             setHasTailored(false);
           }}
+        />
+      )}
+
+      {pendingApply && (
+        <ApplyConfirmModal
+          job={pendingApply.job}
+          submitting={applyState[pendingApply.dedupeKey]?.applying || false}
+          onConfirm={handleApplyConfirm}
+          onCancel={() => setPendingApply(null)}
         />
       )}
     </div>

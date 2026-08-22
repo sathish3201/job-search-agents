@@ -24,6 +24,20 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ status, note }),
     }),
+  // HIGH RISK — see agents/apply_playwright.py. Only works when this
+  // dashboard is pointed at a locally-running API (not the deployed
+  // Render one): it opens a real headed browser on whatever machine runs
+  // the backend, and a human needs to be there for CAPTCHAs/2FA and the
+  // final submit confirmation.
+  applyToJob: (dedupeKey, confirmationPhrase) =>
+    request(`/api/applications/${encodeURIComponent(dedupeKey)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({ confirmation_phrase: confirmationPhrase }),
+    }),
+  discardApplication: (dedupeKey) =>
+    request(`/api/applications/${encodeURIComponent(dedupeKey)}/discard`, {
+      method: "POST",
+    }),
 
   getProfile: () => request("/api/profile"),
   getProfileDrafts: () => request("/api/profile/drafts"),
