@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import StatusBadge from "./StatusBadge";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true },
@@ -25,6 +26,7 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+        <StatusBadge />
       </header>
       <main className="content">
         <Outlet />

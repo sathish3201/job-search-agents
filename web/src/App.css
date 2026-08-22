@@ -68,6 +68,55 @@ body {
   padding: 2rem;
 }
 
+.topbar {
+  justify-content: space-between;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.status-sep {
+  width: 1px;
+  height: 0.8rem;
+  background: var(--border);
+}
+
+.status-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.status-dot-online {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.15);
+}
+
+.status-dot-offline {
+  background: var(--red);
+}
+
+.status-dot-unknown {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;
