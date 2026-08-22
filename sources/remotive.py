@@ -1,4 +1,11 @@
-"""Remotive public job API — free, no key required, remote-focused listings."""
+"""Remotive public job API — free, no key required, remote-focused listings.
+
+Default-off, opt-in via REMOTIVE_ENABLED=true — LinkedIn (Apify) and Naukri
+(Apify) are the default active sources per user direction; Remotive only
+runs when explicitly approved, same "off unless opted in" gating style as
+sources/apify_source.py's APIFY_ALLOW_SCRAPING (though Remotive itself
+carries none of the ToS/scraping risk that gate exists for — this is
+purely about which sources run by default, not a safety gate)."""
 from __future__ import annotations
 
 import os
@@ -13,7 +20,7 @@ class RemotiveSource(JobSource):
     name = "remotive"
 
     def is_configured(self) -> bool:
-        return os.getenv("REMOTIVE_ENABLED", "true").lower() == "true"
+        return os.getenv("REMOTIVE_ENABLED", "false").lower() == "true"
 
     def search(self, query: str, location: str, remote_ok: bool, limit: int = 25) -> list[JobListing]:
         if not remote_ok:

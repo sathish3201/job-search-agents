@@ -170,8 +170,20 @@ def tailor_resume_for_target(
         if not truthfully_addable:
             break  # no more truthful ground to cover — stop rather than fabricate
 
-        current_headline, current_summary, reasoning = _draft_tailored_text(
+        draft_headline, draft_summary, reasoning = _draft_tailored_text(
             job, profile, current_headline, current_summary, truthfully_addable
+        )
+        # Deterministic guard, not trusting the LLM's own "don't invent"
+        # compliance: a real run produced "reduced deployment time by 50%"
+        # for a candidate whose actual resume had no such metric anywhere.
+        # The prompt now also warns against this, but small local models
+        # still drop instructions under pressure to sound impressive — this
+        # is the actual backstop.
+        current_headline = _strip_fabricated_numbers(
+            draft_headline, profile.resume_raw_text, fallback_text=current_headline
+        )
+        current_summary = _strip_fabricated_numbers(
+            draft_summary, profile.resume_raw_text, fallback_text=current_summary
         )
         keywords_added.extend(truthfully_addable)
 
@@ -194,6 +206,44 @@ def tailor_resume_for_target(
         reasoning=reasoning + f" (Reached {final_score}/100, short of the {target_score} target — "
         "no further truthful keywords to add.)",
     )
+
+
+_NUMBER_RE = re.compile(r"\d[\d,.]*%?")
+
+
+def _strip_fabricated_numbers(draft_text: str, source_text: str, fallback_text: str) -> str:
+    """Deterministic fabrication guard: any numeric token (count, percentage,
+    dollar figure, year count, etc.) in the drafted text that doesn't
+    literally appear in the candidate's own resume text gets that whole
+    sentence removed, rather than trusting the LLM's "don't invent a
+    metric" instruction to actually hold. Confirmed necessary by a real
+    failure: a drafted summary claimed "reduced deployment time by 50%"
+    for a candidate whose resume had no such figure anywhere. Whole
+    sentences are dropped rather than just the number, since editing out
+    only the digits usually leaves a grammatically broken or misleading
+    claim behind (e.g. "reduced deployment time by %" or "reduced
+    deployment time" implying an unstated exact result).
+
+    fallback_text is the pre-draft (previous-iteration) text to use if
+    stripping empties the draft entirely — NOT draft_text itself, since
+    that would silently let a wholly-fabricated one-sentence claim through
+    unfiltered."""
+    allowed_numbers = set(_NUMBER_RE.findall(source_text))
+
+    # Split on sentence-ending punctuation, keeping it simple — this text
+    # is always a short one-line headline or 2-3 sentence summary, not
+    # prose needing a real sentence tokenizer.
+    sentences = re.split(r"(?<=[.!?])\s+", draft_text.strip())
+    kept = []
+    for sentence in sentences:
+        numbers_in_sentence = set(_NUMBER_RE.findall(sentence))
+        fabricated = numbers_in_sentence - allowed_numbers
+        if fabricated:
+            continue  # drop this sentence entirely
+        kept.append(sentence)
+
+    result = " ".join(kept).strip()
+    return result if result else fallback_text
 
 
 def _truthfully_addable(missing_keywords: list[str], candidate_skills: list[str]) -> list[str]:
@@ -221,17 +271,31 @@ def _draft_tailored_text(
     literally include the given keywords, since the candidate already has
     them as real skills (enforced by _truthfully_addable before this is
     ever called)."""
-    prompt = f"""Rewrite this resume headline and summary to naturally include
-these exact keywords (the candidate genuinely has these skills already —
-just make sure the literal words appear): {", ".join(keywords_to_weave_in)}
+    prompt = f"""You are a senior technical recruiter tailoring a candidate's
+resume for one specific role. Rewrite the headline and summary below to:
+
+1. Naturally include these exact keywords, since the candidate genuinely
+   has these skills already (just make sure the literal words appear):
+   {", ".join(keywords_to_weave_in)}
+2. Lead with active, ownership-focused language ("built", "designed",
+   "shipped") instead of passive responsibility language ("responsible
+   for") — but ONLY reframe verbs and structure, never add a number,
+   percentage, or outcome that isn't already stated in the candidate's
+   own text below. If the original text has no metric, the rewrite must
+   not have one either.
+3. Mirror the tone and priorities of the target job posting below, so the
+   summary reads like it was written for this specific role, not generic.
 
 Target job: {job.title} at {job.company}
+Job posting (for tone/priorities only — do not copy claims from it):
+{job.description[:600]}
 
 Current headline: {current_headline}
 Current summary: {current_summary}
 
-Do NOT invent any experience, skill, or claim not already true of this
-candidate. Only rephrase/reorder/add the literal keyword text.
+Do NOT invent any experience, skill, metric, percentage, or claim not
+already true of this candidate. Only rephrase/reorder/emphasize what's
+real, and add the literal keyword text.
 
 Respond in exactly this format:
 HEADLINE: <max 220 chars>
