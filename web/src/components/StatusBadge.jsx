@@ -1,43 +1,41 @@
 import { useEffect, useState } from "react";
+import { api } from "../api/client";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8020";
-const MODEL_URL = import.meta.env.VITE_MODEL_URL || "";
 const POLL_INTERVAL_MS = 60_000;
 
-// Checked entirely from the browser, no backend route involved: the API
-// dot hits this project's own /health, the Model dot hits the LLM
-// tunnel's /health directly (ollama-service's cheap health check, not a
-// real chat completion — no reason to spend an inference call just to
-// render a status dot). Same pattern as the portfolio site's StatusBadge,
-// adapted to this project's two actual backends instead of one shared
-// context.
-function usePolledOnline(url, { enabled = true } = {}) {
+// Same pattern as the portfolio site's own StatusBadge: the API dot is a
+// plain fetch to this project's own /health. The Model dot goes through
+// this API's /model-status route rather than hitting the LLM tunnel
+// directly from the browser — confirmed by a real CORS preflight test
+// that the Termux llama-server behind the tunnel sends no
+// Access-Control-Allow-Origin header, so a direct cross-origin fetch from
+// the deployed frontend would be blocked by the browser even though the
+// tunnel itself is reachable. A server-to-server check from this API
+// isn't subject to that restriction.
+function usePolledOnline(check) {
   const [online, setOnline] = useState(null);
 
   useEffect(() => {
-    if (!enabled) {
-      setOnline(null);
-      return;
-    }
     let cancelled = false;
 
-    function check() {
-      fetch(url, { cache: "no-store" })
-        .then((res) => {
-          if (!cancelled) setOnline(res.ok);
+    function run() {
+      check()
+        .then((result) => {
+          if (!cancelled) setOnline(result);
         })
         .catch(() => {
           if (!cancelled) setOnline(false);
         });
     }
 
-    check();
-    const interval = setInterval(check, POLL_INTERVAL_MS);
+    run();
+    const interval = setInterval(run, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [url, enabled]);
+  }, [check]);
 
   return online;
 }
@@ -48,8 +46,10 @@ function Dot({ status }) {
 }
 
 export default function StatusBadge() {
-  const apiOnline = usePolledOnline(`${API_BASE}/health`);
-  const modelOnline = usePolledOnline(`${MODEL_URL}/health`, { enabled: Boolean(MODEL_URL) });
+  const apiOnline = usePolledOnline(() =>
+    fetch(`${API_BASE}/health`, { cache: "no-store" }).then((res) => res.ok)
+  );
+  const modelOnline = usePolledOnline(() => api.getModelStatus().then((json) => json.online === true));
 
   return (
     <div className="status-badge" title="Live connection status">
@@ -59,7 +59,7 @@ export default function StatusBadge() {
       </span>
       <span className="status-sep" />
       <span className="status-item">
-        <Dot status={MODEL_URL ? modelOnline : null} />
+        <Dot status={modelOnline} />
         Model
       </span>
     </div>

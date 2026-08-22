@@ -29,6 +29,7 @@ export const api = {
   getProfileDrafts: () => request("/api/profile/drafts"),
 
   getImprovement: () => request("/api/improvement"),
+  getModelStatus: () => request("/api/model-status"),
 
   tailorResume: (dedupeKey) =>
     request("/api/jobs/tailor-resume", {
