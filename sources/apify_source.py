@@ -65,12 +65,19 @@ def _default_run_input(query: str, location: str, limit: int) -> dict:
 
 
 def _linkedin_run_input(query: str, location: str, limit: int) -> dict:
-    """Verified against bebity/linkedin-jobs-scraper's actual input schema
-    (required: title, location, rows) — not a guess."""
+    """Verified against valig/linkedin-jobs-scraper's actual input schema
+    (title, location, limit — no required fields) with a real run: 5/5 jobs
+    returned successfully. Previously pointed at bebity/linkedin-jobs-
+    scraper, which requires a paid rental this account doesn't have (fails
+    every call with a 403 — see git history). valig's actor was found via
+    the Apify store, confirmed accessible with this account's key, and its
+    output field names (title, companyName, location, url, description,
+    id) already match _normalize()'s existing fallback chains exactly, no
+    output-mapping changes needed."""
     return {
         "title": query,
-        "location": location or "United States",
-        "rows": min(limit, 1000),
+        "location": location or "India",
+        "limit": limit,
     }
 
 
@@ -96,7 +103,7 @@ def _naukri_run_input(query: str, location: str, limit: int) -> dict:
 # APIFY_TARGETS when adding a genuinely new actor with its own schema — an
 # actor not listed here falls back to _default_run_input, which is a guess.
 _RUN_INPUT_BUILDERS = {
-    "bebity/linkedin-jobs-scraper": _linkedin_run_input,
+    "valig/linkedin-jobs-scraper": _linkedin_run_input,
     "muhammetakkurtt/naukri-job-scraper": _naukri_run_input,
 }
 
