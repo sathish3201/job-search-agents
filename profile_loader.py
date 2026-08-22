@@ -1,8 +1,15 @@
-"""Loads and LLM-parses the candidate's RESUME.md into a structured CandidateProfile."""
+"""Loads and LLM-parses the candidate's RESUME.md into a structured CandidateProfile.
+Parsing is cached in SQLite keyed by a hash of the resume text (see cache.py,
+the same store used by agents/ranker.py) — an exact-match key-value lookup is
+the right tool here, not ChromaDB: this is "have I parsed this exact text
+before", not a similarity search. RESUME.md rarely changes between runs, so
+this turns the profile-parsing LLM call from "every run" into "once per
+resume edit"."""
 from __future__ import annotations
 
 import os
 
+from cache import SqliteCache, content_hash
 from models import CandidateProfile
 
 
@@ -16,11 +23,17 @@ def load_resume_text(path: str | None = None) -> str:
         return f.read()
 
 
-def parse_profile(resume_text: str, llm) -> CandidateProfile:
+def parse_profile(resume_text: str, llm, cache: SqliteCache | None = None) -> CandidateProfile:
     """Ask the LLM to extract a few structured fields with a short, direct prompt.
     Small local models (3B-class) are unreliable at full pydantic-schema JSON
     output — a plain labeled-line format is faster and much less likely to fail
     to parse, at the cost of being a bit more manual to pull apart here."""
+    cache = cache or SqliteCache()
+    cache_key = "profile:" + content_hash(resume_text)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return CandidateProfile(**cached)
+
     prompt = f"""Read this resume and answer in EXACTLY this format, one line each,
 no extra commentary:
 
@@ -56,7 +69,7 @@ Resume:
     except ValueError:
         years = 0.0
 
-    return CandidateProfile(
+    profile = CandidateProfile(
         name=fields["NAME"],
         headline=fields["HEADLINE"],
         summary=fields["SUMMARY"],
@@ -65,3 +78,5 @@ Resume:
         target_roles=[r.strip() for r in fields["TARGET_ROLES"].split(",") if r.strip()],
         resume_raw_text=resume_text,
     )
+    cache.set(cache_key, profile.model_dump())
+    return profile

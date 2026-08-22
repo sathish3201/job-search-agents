@@ -22,7 +22,7 @@ def run_pipeline_job() -> None:
     try:
         llm = get_llm()
         resume_text = load_resume_text()
-        run_state.set_progress("Parsing candidate profile")
+        run_state.set_progress("Loading candidate profile (cached if unchanged since last run)")
         profile = parse_profile(resume_text, llm)
 
         graph = build_graph()
