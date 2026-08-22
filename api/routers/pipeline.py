@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks
 from api.pipeline_runner import run_pipeline_job
 from api.run_state import run_state
 from api.schemas import RunResult, RunStatus
+from models import RankedJob
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -31,3 +32,12 @@ def get_result():
         profile_drafts=run_state.profile_drafts,
         new_applications_count=run_state.new_applications_count,
     )
+
+
+@router.get("/live", response_model=list[RankedJob])
+def get_live_jobs():
+    """Jobs that have qualified so far in the currently-running (or just-
+    finished) pipeline — poll this during a run for incremental display
+    instead of waiting for /result, which is only populated once the whole
+    run completes."""
+    return run_state.live_jobs

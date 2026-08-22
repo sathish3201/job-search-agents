@@ -26,11 +26,22 @@ class RunState:
         self.profile_drafts: list[ProfileDraft] = []
         self.profile: CandidateProfile | None = None
         self.new_applications_count: int = 0
+        # Jobs pushed here the instant each one clears both the fit and ATS
+        # thresholds, mid-run — lets the frontend show results incrementally
+        # as they're found instead of a single reveal when the whole run
+        # finishes. Cleared at the start of each run, superseded by
+        # ats_passed_jobs (the authoritative final list) once done.
+        self.live_jobs: list[RankedJob] = []
 
     def set_running(self) -> None:
         with self._lock:
             self.status = "running"
             self.message = "Pipeline is running..."
+            self.live_jobs = []
+
+    def add_live_job(self, job: RankedJob) -> None:
+        with self._lock:
+            self.live_jobs.append(job)
 
     def set_progress(self, stage: str, done: int = 0, total: int = 0) -> None:
         """Called from inside the pipeline to report where it currently is —

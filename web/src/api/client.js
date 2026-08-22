@@ -16,6 +16,7 @@ export const api = {
   triggerRun: () => request("/api/pipeline/run", { method: "POST" }),
   getStatus: () => request("/api/pipeline/status"),
   getResult: () => request("/api/pipeline/result"),
+  getLiveJobs: () => request("/api/pipeline/live"),
 
   getApplications: () => request("/api/applications"),
   updateApplication: (dedupeKey, status, note = "") =>

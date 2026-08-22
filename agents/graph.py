@@ -49,6 +49,8 @@ _ranker = LLMRanker(cache=_cache)
 
 MIN_FIT_SCORE = 70  # jobs scoring below this are dropped entirely — not shown, not tracked
 ATS_FRONTEND_THRESHOLD = 75  # only jobs scoring >= this on ATS keyword match are shown in the UI
+REMOTIVE_SEARCH_LIMIT = 9  # keep the fastest source capped so a run has fewer jobs to rank overall
+DEFAULT_SEARCH_LIMIT = 15  # other sources (Apify, Adzuna, etc.) keep the previous cap
 
 # Optional hooks, set by api/pipeline_runner.py before invoking the graph, so
 # individual nodes can report live progress. Not LangGraph state fields
@@ -56,8 +58,12 @@ ATS_FRONTEND_THRESHOLD = 75  # only jobs scoring >= this on ATS keyword match ar
 # simplest wiring for a single-process deployment.
 #   _progress_hook(done, total) -> None      -- per-job ranking progress
 #   _stage_hook(stage_name) -> None          -- coarse "which node is running"
+#   _live_job_hook(RankedJob) -> None        -- one job fully qualified (fit
+#                                                + ATS both checked), for
+#                                                incremental frontend display
 _progress_hook = None
 _stage_hook = None
+_live_job_hook = None
 
 
 def set_progress_hook(hook) -> None:
@@ -68,6 +74,11 @@ def set_progress_hook(hook) -> None:
 def set_stage_hook(hook) -> None:
     global _stage_hook
     _stage_hook = hook
+
+
+def set_live_job_hook(hook) -> None:
+    global _live_job_hook
+    _live_job_hook = hook
 
 
 class PipelineState(BaseModel):
@@ -103,7 +114,12 @@ def search_jobs_node(state: PipelineState) -> dict:
         if _stage_hook:
             _stage_hook(f"Searching {src.name}")
         print(f"[search_jobs] calling {src.name}...", flush=True)
-        jobs = src.search(state.query, state.location, state.remote_ok, limit=15)
+        # Remotive capped lower than other sources: it's the fastest, always-on
+        # source with no rate/cost concern, but a smaller cap here means fewer
+        # jobs overall to rank per run, which is the actual lever for making a
+        # full run finish faster against the slow LLM ranking step.
+        limit = REMOTIVE_SEARCH_LIMIT if src.name == "remotive" else DEFAULT_SEARCH_LIMIT
+        jobs = src.search(state.query, state.location, state.remote_ok, limit=limit)
         print(f"[search_jobs] {src.name}: {len(jobs)} results", flush=True)
         all_jobs.extend(jobs)
 
@@ -121,30 +137,43 @@ def search_jobs_node(state: PipelineState) -> dict:
     return {"raw_jobs": deduped}
 
 
-def _persist_if_qualifying(ranked: RankedJob) -> None:
-    """Writes one job to the application tracker the instant it's ranked,
-    if it clears MIN_FIT_SCORE. Called from LLMRanker's on_ranked hook, so
-    results survive a mid-run process restart — previously everything was
-    held in memory until update_tracker_node ran at the very end, which
-    meant a container restart (Render free tier can do this) silently threw
-    away an entire run's worth of completed LLM calls with no error shown,
-    just a reset to "idle" with empty results. Idempotent: ApplicationStore
-    upserts by dedupe_key, so update_tracker_node re-running over the same
-    jobs afterward is a harmless no-op, not a double-write."""
+def _persist_if_qualifying(ranked: RankedJob, profile: CandidateProfile) -> None:
+    """Called from LLMRanker's on_ranked hook the instant one job finishes
+    LLM scoring (not after the whole batch). Does three things per
+    qualifying job, all live rather than batched at the end:
+      1. Runs the ATS keyword check for this one job immediately, so
+         ats_score is available right away instead of waiting for a
+         separate batch node after every job in the run has been ranked.
+      2. Persists to the application tracker (disk-backed) — survives a
+         mid-run process restart, see the original comment this replaced.
+      3. Fires _live_job_hook so the API layer can stream this one job to
+         the frontend immediately, rather than the UI showing nothing
+         until the entire run finishes (ChatGPT-style incremental display,
+         not a single batched reveal at the end)."""
     if ranked.fit_score < MIN_FIT_SCORE:
         return
+
+    ats = run_ats_check(ranked.job, profile)
+    ranked.ats_score = ats.ats_score
+    ranked.ats_keywords_found = ats.keywords_found
+    ranked.ats_keywords_missing = ats.keywords_missing
+    ranked.ats_recommendation = ats.recommendation
+
     store = ApplicationStore()
     key = ranked.job.dedupe_key
-    if key in store.seen_keys():
-        return
-    store.upsert(
-        Application(
-            dedupe_key=key,
-            job=ranked.job,
-            status=ApplicationStatus.FOUND,
-            fit_score=ranked.fit_score,
+    already_seen = key in store.seen_keys()
+    if not already_seen:
+        store.upsert(
+            Application(
+                dedupe_key=key,
+                job=ranked.job,
+                status=ApplicationStatus.FOUND,
+                fit_score=ranked.fit_score,
+            )
         )
-    )
+
+    if ats.ats_score >= ATS_FRONTEND_THRESHOLD and _live_job_hook:
+        _live_job_hook(ranked)
 
 
 def rank_jobs_node(state: PipelineState) -> dict:
@@ -159,8 +188,12 @@ def rank_jobs_node(state: PipelineState) -> dict:
 
     if _stage_hook:
         _stage_hook(f"Ranking {len(state.raw_jobs)} jobs")
+
+    def on_ranked(ranked_job: RankedJob) -> None:
+        _persist_if_qualifying(ranked_job, state.profile)
+
     ranked = _ranker.rank_all(
-        state.raw_jobs, state.profile, on_progress=_progress_hook, on_ranked=_persist_if_qualifying
+        state.raw_jobs, state.profile, on_progress=_progress_hook, on_ranked=on_ranked
     )
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
@@ -169,31 +202,19 @@ def rank_jobs_node(state: PipelineState) -> dict:
 
 
 def ats_check_jobs_node(state: PipelineState) -> dict:
-    """Runs the deterministic ATS keyword check (agents/ats_checker.py)
-    against every job that already cleared MIN_FIT_SCORE, filtering down to
-    only jobs at or above ATS_FRONTEND_THRESHOLD into ats_passed_jobs --
-    that's what the frontend actually displays, not the full ranked_jobs
-    list. A job can be a strong LLM-judged fit (fit_score) but still fail
-    here if the resume never uses the literal keywords a real ATS scans
-    for; that's the whole point of a separate check. No LLM call unless a
-    job has missing keywords (see ats_checker.run_ats_check's own
-    short-circuit)."""
+    """Filters ranked_jobs down to ats_passed_jobs. The ATS check itself
+    already ran per-job inside _persist_if_qualifying (streamed live to the
+    frontend as each job was scored), so this node just re-derives the same
+    filter from the ats_score already stamped onto each RankedJob — no
+    redundant LLM/ATS work here, just the final authoritative list the rest
+    of the graph (update_tracker, draft_profile_updates) reads from."""
     if not state.ranked_jobs:
         return {"ats_passed_jobs": []}
 
     if _stage_hook:
-        _stage_hook(f"ATS-checking {len(state.ranked_jobs)} jobs")
+        _stage_hook(f"Finalizing {len(state.ranked_jobs)} ranked jobs")
 
-    passed = []
-    for r in state.ranked_jobs:
-        ats = run_ats_check(r.job, state.profile)
-        r.ats_score = ats.ats_score
-        r.ats_keywords_found = ats.keywords_found
-        r.ats_keywords_missing = ats.keywords_missing
-        r.ats_recommendation = ats.recommendation
-        if ats.ats_score >= ATS_FRONTEND_THRESHOLD:
-            passed.append(r)
-
+    passed = [r for r in state.ranked_jobs if r.ats_score >= ATS_FRONTEND_THRESHOLD]
     print(
         f"[ats_check] {len(state.ranked_jobs)} ranked -> {len(passed)} kept "
         f"(ats_score >= {ATS_FRONTEND_THRESHOLD})",

@@ -148,6 +148,12 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const pollRef = useRef(null);
+  const livePollRef = useRef(null);
+  // Default on: jobs appear incrementally as the pipeline qualifies them,
+  // instead of one reveal when the whole run finishes. User can switch back
+  // to the old batch behavior — SOLID: this component doesn't hard-code one
+  // display strategy, it picks between two independently.
+  const [streamingEnabled, setStreamingEnabled] = useState(true);
 
   const [tailoringKey, setTailoringKey] = useState(null);
   const [tailoring, setTailoring] = useState(null);
@@ -176,13 +182,17 @@ export default function Dashboard() {
       await loadResult();
       setLoading(false);
     })();
-    return () => clearInterval(pollRef.current);
+    return () => {
+      clearInterval(pollRef.current);
+      clearInterval(livePollRef.current);
+    };
   }, []);
 
   const handleRun = async () => {
     const res = await api.triggerRun();
     setStatus(res.status);
     setMessage(res.message);
+    if (streamingEnabled) setJobs([]); // start the incremental reveal from empty
 
     pollRef.current = setInterval(async () => {
       const s = await api.getStatus();
@@ -190,9 +200,24 @@ export default function Dashboard() {
       setMessage(s.message);
       if (s.status === "done" || s.status === "error") {
         clearInterval(pollRef.current);
-        if (s.status === "done") await loadResult();
+        clearInterval(livePollRef.current);
+        if (s.status === "done") await loadResult(); // final authoritative list replaces the streamed one
       }
     }, 3000);
+
+    if (streamingEnabled) {
+      // Same 3s cadence as the status poll — one extra lightweight GET per
+      // tick, not a separate faster loop, so a run in progress doesn't add
+      // meaningfully more request volume than before streaming existed.
+      livePollRef.current = setInterval(async () => {
+        try {
+          const live = await api.getLiveJobs();
+          setJobs(live || []);
+        } catch {
+          // transient — next tick retries
+        }
+      }, 3000);
+    }
   };
 
   const handleTailor = async (dedupeKey) => {
@@ -219,9 +244,20 @@ export default function Dashboard() {
       <div className="main-column">
         <div className="page-header">
           <h1>Dashboard</h1>
-          <button onClick={handleRun} disabled={status === "running"} className="primary-btn">
-            {status === "running" ? "Running..." : "Run New Search"}
-          </button>
+          <div className="page-header-actions">
+            <label className="stream-toggle" title="Show jobs as they qualify, or wait for the full run">
+              <input
+                type="checkbox"
+                checked={streamingEnabled}
+                onChange={(e) => setStreamingEnabled(e.target.checked)}
+                disabled={status === "running"}
+              />
+              Live results
+            </label>
+            <button onClick={handleRun} disabled={status === "running"} className="primary-btn">
+              {status === "running" ? "Running..." : "Run New Search"}
+            </button>
+          </div>
         </div>
         {message && <div className={`status-banner status-${status}`}>{message}</div>}
 

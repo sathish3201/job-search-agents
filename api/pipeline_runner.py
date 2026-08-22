@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import os
 
-from agents.graph import PipelineState, build_graph, set_progress_hook, set_stage_hook
+from agents.graph import (
+    PipelineState,
+    build_graph,
+    set_live_job_hook,
+    set_progress_hook,
+    set_stage_hook,
+)
 from api.run_state import run_state
 from api.vector_indexer import index_ranked_jobs_job
 from llm import get_llm
@@ -19,6 +25,7 @@ def run_pipeline_job() -> None:
     run_state.set_running()
     set_progress_hook(lambda done, total: run_state.set_progress("Ranking jobs", done, total))
     set_stage_hook(lambda stage: run_state.set_progress(stage))
+    set_live_job_hook(run_state.add_live_job)
     try:
         llm = get_llm()
         resume_text = load_resume_text()

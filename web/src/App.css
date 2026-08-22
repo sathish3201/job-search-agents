@@ -79,6 +79,24 @@ body {
   margin: 0;
 }
 
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.stream-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.stream-toggle input:disabled {
+  cursor: default;
+}
+
 .muted {
   color: var(--muted);
 }
