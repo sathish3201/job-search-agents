@@ -100,11 +100,20 @@ function TailoredResumePanel({ tailoring, loading, error, onClose }) {
   );
 }
 
+// Mirrors api/routers/tailor.py's TAILOR_ATS_MIN — kept in sync manually
+// since this is a small UI-only display gate, not worth a round-trip
+// just to fetch a constant. Below this, tailoring would need fabricated
+// skills to close the gap (the backend's fabrication guard would strip
+// them anyway), so the button doesn't appear rather than offering a
+// mostly-wasted action.
+const TAILOR_ATS_MIN = 70;
+
 function JobCard({ ranked, onTailor, tailoringKey, onApply, onDiscard, applyState }) {
   const { job, fit_score, ats_score, matching_skills, missing_skills, tailored_pitch } = ranked;
   const dedupeKey = `${job.source}:${job.external_id}`;
   const isTailoring = tailoringKey === dedupeKey;
   const state = applyState[dedupeKey] || {};
+  const canTailor = ats_score >= TAILOR_ATS_MIN;
 
   if (state.discarded) return null; // discarded jobs drop out of the list immediately
 
@@ -142,9 +151,18 @@ function JobCard({ ranked, onTailor, tailoringKey, onApply, onDiscard, applyStat
         <a href={job.url} target="_blank" rel="noreferrer" className="link-btn">
           View posting →
         </a>
-        <button onClick={() => onTailor(dedupeKey)} disabled={isTailoring} className="secondary-btn">
-          {isTailoring ? "Tailoring…" : "Tailor Resume"}
-        </button>
+        {canTailor ? (
+          <button onClick={() => onTailor(dedupeKey)} disabled={isTailoring} className="secondary-btn">
+            {isTailoring ? "Tailoring…" : "Tailor Resume"}
+          </button>
+        ) : (
+          <span
+            className="muted"
+            title={`ATS score ${ats_score} is below ${TAILOR_ATS_MIN} — tailoring is only offered for jobs already reasonably close`}
+          >
+            Tailoring unavailable (ATS &lt; {TAILOR_ATS_MIN})
+          </span>
+        )}
         {!state.result?.success && (
           <>
             <button
@@ -240,10 +258,14 @@ export default function Dashboard() {
   const loadResult = async () => {
     try {
       const result = await api.getResult();
-      // ats_passed_jobs, not ranked_jobs: only jobs that cleared both the
-      // LLM fit threshold and the ATS keyword-match threshold (>=75) are
-      // meant to be displayed here.
-      setJobs(result.ats_passed_jobs || []);
+      // ranked_jobs (the full superset), not ats_passed_jobs: the user
+      // wants to see the actual ATS score range across every fit-passed
+      // job, not just a binary shown/hidden cutoff. Tailor Resume is
+      // separately gated at ats_score >= TAILOR_ATS_MIN below — a low
+      // score still shows on the dashboard, it just doesn't offer
+      // tailoring (which would need fabricated skills to close that big a
+      // gap, and the fabrication guard would just strip them anyway).
+      setJobs(result.ranked_jobs || []);
     } catch {
       // no result yet, ignore
     }
@@ -371,8 +393,9 @@ export default function Dashboard() {
           <p className="muted">Loading...</p>
         ) : sorted.length === 0 ? (
           <p className="muted">
-            No jobs yet — click "Run New Search" to fetch, rank, and ATS-check jobs. Only jobs
-            scoring 75+ on the ATS keyword check are shown here.
+            No jobs yet — click "Run New Search" to fetch, rank, and ATS-check jobs. Every job
+            that clears the fit-score check is shown here, with its actual ATS score — Tailor
+            Resume is offered once ATS score is 70+.
           </p>
         ) : (
           <div className="card-grid">

@@ -226,7 +226,12 @@ def _persist_if_qualifying(ranked: RankedJob, profile: CandidateProfile) -> None
             )
         )
 
-    if ats.ats_score >= ATS_FRONTEND_THRESHOLD and _live_job_hook:
+    # Fires for every fit-passed job regardless of ATS score, not just
+    # ones clearing ATS_FRONTEND_THRESHOLD — the dashboard now shows the
+    # full ATS score range (per user request) rather than hiding anything
+    # below a cutoff, so live streaming during a run needs to match what
+    # the final result.ranked_jobs list will contain.
+    if _live_job_hook:
         _live_job_hook(ranked)
 
 
