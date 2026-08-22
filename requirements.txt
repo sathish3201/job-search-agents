@@ -13,3 +13,4 @@ feedparser
 rich
 fastembed
 chromadb
+apify-client

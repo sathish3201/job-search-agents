@@ -1,10 +1,11 @@
 """Registry of all job sources. Add a connector here to make it available at runtime."""
 from sources.adzuna import AdzunaSource
+from sources.apify_source import ApifyJobSource
 from sources.base import JobSource
 from sources.jsearch import JSearchSource
 from sources.remotive import RemotiveSource
 
-ALL_SOURCES: list[JobSource] = [AdzunaSource(), JSearchSource(), RemotiveSource()]
+ALL_SOURCES: list[JobSource] = [AdzunaSource(), JSearchSource(), RemotiveSource(), ApifyJobSource()]
 
 
 def active_sources() -> list[JobSource]:
