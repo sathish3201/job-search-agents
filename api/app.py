@@ -1,11 +1,19 @@
 """FastAPI entrypoint. Run with: uvicorn api.app:app --reload --port 8000"""
 from __future__ import annotations
 
+import logging
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+# Without this, modules using logging.getLogger(...).info(...) (e.g.
+# agents/url_scraper.py) silently go nowhere on Render — Python's root
+# logger defaults to WARNING with no handler, so INFO-level scrape-stage
+# logs (nav/parse/extract) never reached Render's log viewer, making the
+# scraper look like a black box during a real debugging session.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
