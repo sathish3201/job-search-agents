@@ -92,6 +92,58 @@ const PLATFORM_NOTES = {
   },
 };
 
+// Verified against a real LinkedIn "Save to PDF" export (2026-08-23) — the
+// only reliable way to check live profile content without an automated,
+// authenticated scrape (see agents/apply_playwright.py's module docstring
+// for why that's a real ban-risk action, not a technicality). Update this
+// list by hand each time a fresh export is checked; it deliberately does
+// not try to infer status automatically.
+const LINKEDIN_PROGRESS = [
+  {
+    status: "done",
+    title: "Headline",
+    detail: "Live profile matches the Role-target rewrite exactly.",
+  },
+  {
+    status: "done",
+    title: "About section",
+    detail: "Full rewrite is live, including the closing CTA line.",
+  },
+  {
+    status: "done",
+    title: "Experience bullets",
+    detail: "All 5 outcome-verb, metric-led bullets are live.",
+  },
+  {
+    status: "done",
+    title: "Top 3 pinned skills",
+    detail: "MCP, LangGraph, RAG are pinned first, as recommended.",
+  },
+  {
+    status: "missing",
+    title: "Certifications section has the wrong entries",
+    detail:
+      "Currently shows generic filler (\"Viewing & printing worksheets in Excel 365\", \"Using Punctuation Marks\", \"Year 1 Phase 1: 0 to 3 months\") instead of your real ones. Delete the filler, add: Java Full Stack Certification (Wipro TalentNext), AI/ML Virtual Internship Certificate, Smart Coder Certification (Global Rank 1402/22591, Smart Interviews), HTML Attributes & Tags (GL Academy).",
+  },
+  {
+    status: "unknown",
+    title: "Featured section",
+    detail:
+      "Not visible in LinkedIn's PDF export format, so status can't be confirmed from a PDF check alone — verify directly on your profile whether your top 3 projects (Local Agent Pipeline, Job Search Agent, MockGenius AI) are pinned with live demo links.",
+  },
+  {
+    status: "unknown",
+    title: "Recommendations",
+    detail: "Not visible in the PDF export either — check directly on your profile page.",
+  },
+  {
+    status: "weak",
+    title: "\"Blog\" contact link",
+    detail:
+      "Points to linkedin.com/safety/go/ — LinkedIn's generic external-link warning redirect, not a real destination. Looks broken to anyone who clicks it; replace with GitHub or your portfolio site, or remove it.",
+  },
+];
+
 function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
@@ -129,6 +181,27 @@ export default function ProfileAudit() {
         {notes.label}'s own editor yourself. Refresh this page's content by hand when your resume
         changes meaningfully — it isn't re-generated from live {notes.label} data.
       </p>
+
+      {platform === "linkedin" && (
+        <div className="card">
+          <h3>Live progress (checked against a real profile export)</h3>
+          <p className="muted">
+            Verified against a LinkedIn "Save to PDF" export on 2026-08-23 — the safe way to check
+            live content without an automated, authenticated scrape.
+          </p>
+          {LINKEDIN_PROGRESS.map((item) => (
+            <div className="check-row-inline" key={item.title}>
+              <span className={`status-dot status-${item.status}`} />
+              <div>
+                <strong>{item.title}</strong>
+                <p className="muted" style={{ margin: "0.15rem 0 0" }}>
+                  {item.detail}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="card">
         <h3>{notes.headlineField}</h3>

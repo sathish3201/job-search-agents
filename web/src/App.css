@@ -495,3 +495,34 @@ body {
   justify-content: flex-end;
   gap: 0.75rem;
 }
+
+.check-row-inline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.check-row-inline:last-child {
+  border-bottom: none;
+}
+
+.status-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  margin-top: 0.35rem;
+  flex-shrink: 0;
+}
+.status-dot.status-done {
+  background: var(--green);
+}
+.status-dot.status-missing {
+  background: var(--red);
+}
+.status-dot.status-weak {
+  background: var(--amber);
+}
+.status-dot.status-unknown {
+  background: var(--muted);
+}
