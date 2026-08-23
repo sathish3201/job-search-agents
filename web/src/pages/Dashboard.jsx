@@ -255,9 +255,15 @@ export default function Dashboard() {
   const [applyState, setApplyState] = useState({});
   const [pendingApply, setPendingApply] = useState(null); // {dedupeKey, job} | null — drives the confirm modal
 
-  const loadResult = async () => {
+  // True only while the very first load's request is taking cold-start-
+  // length time — see api/client.js's COLD_START_THRESHOLD_MS. Not used
+  // for the post-run reload (the server is already warm by definition at
+  // that point, so it's never passed onSlow there).
+  const [wakingUp, setWakingUp] = useState(false);
+
+  const loadResult = async (isInitialLoad = false) => {
     try {
-      const result = await api.getResult();
+      const result = await api.getResult(isInitialLoad ? () => setWakingUp(true) : undefined);
       // ranked_jobs (the full superset), not ats_passed_jobs: the user
       // wants to see the actual ATS score range across every fit-passed
       // job, not just a binary shown/hidden cutoff. Tailor Resume is
@@ -268,12 +274,14 @@ export default function Dashboard() {
       setJobs(result.ranked_jobs || []);
     } catch {
       // no result yet, ignore
+    } finally {
+      setWakingUp(false);
     }
   };
 
   useEffect(() => {
     (async () => {
-      await loadResult();
+      await loadResult(true);
       setLoading(false);
     })();
     return () => {
@@ -390,7 +398,11 @@ export default function Dashboard() {
         {message && <div className={`status-banner status-${status}`}>{message}</div>}
 
         {loading ? (
-          <p className="muted">Loading...</p>
+          <p className="muted">
+            {wakingUp
+              ? "Waking up the server — this can take up to a minute on the first request after it's been idle..."
+              : "Loading..."}
+          </p>
         ) : sorted.length === 0 ? (
           <p className="muted">
             No jobs yet — click "Run New Search" to fetch, rank, and ATS-check jobs. Every job

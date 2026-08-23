@@ -20,10 +20,11 @@ export default function ProfileDrafts() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getProfileDrafts().then((d) => {
-      setDrafts(d);
-      setLoading(false);
-    });
+    api
+      .getProfileDrafts()
+      .then((d) => setDrafts(d))
+      .catch(() => setDrafts([])) // no run yet, or a transient fetch failure — same empty state either way
+      .finally(() => setLoading(false));
   }, []);
 
   return (

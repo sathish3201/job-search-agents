@@ -7,15 +7,22 @@ export default function Applications() {
   const [apps, setApps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState(null);
+  const [wakingUp, setWakingUp] = useState(false);
 
-  const load = async () => {
-    const data = await api.getApplications();
-    setApps(data);
-    setLoading(false);
+  const load = async (isInitialLoad = false) => {
+    try {
+      const data = await api.getApplications(isInitialLoad ? () => setWakingUp(true) : undefined);
+      setApps(data);
+    } catch {
+      setApps([]); // treat a fetch failure the same as "nothing tracked yet"
+    } finally {
+      setWakingUp(false);
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    load();
+    load(true);
   }, []);
 
   const handleStatusChange = async (dedupeKey, newStatus) => {
@@ -34,7 +41,11 @@ export default function Applications() {
         <h1>Applications</h1>
       </div>
       {loading ? (
-        <p className="muted">Loading...</p>
+        <p className="muted">
+          {wakingUp
+            ? "Waking up the server — this can take up to a minute on the first request after it's been idle..."
+            : "Loading..."}
+        </p>
       ) : apps.length === 0 ? (
         <p className="muted">No tracked applications yet — run a search from the Dashboard first.</p>
       ) : (

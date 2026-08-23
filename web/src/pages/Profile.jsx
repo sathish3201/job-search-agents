@@ -4,16 +4,26 @@ import { api } from "../api/client";
 export default function Profile() {
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState("");
+  const [wakingUp, setWakingUp] = useState(false);
 
   useEffect(() => {
     api
-      .getProfile()
+      .getProfile(() => setWakingUp(true))
       .then((res) => setProfile(res.profile))
-      .catch(() => setError("No profile loaded yet — run a search from the Dashboard first."));
+      .catch(() => setError("No profile loaded yet — run a search from the Dashboard first."))
+      .finally(() => setWakingUp(false));
   }, []);
 
   if (error) return <p className="muted">{error}</p>;
-  if (!profile) return <p className="muted">Loading...</p>;
+  if (!profile) {
+    return (
+      <p className="muted">
+        {wakingUp
+          ? "Waking up the server — this can take up to a minute on the first request after it's been idle..."
+          : "Loading..."}
+      </p>
+    );
+  }
 
   return (
     <div>

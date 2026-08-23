@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 data/applications.json
+data/last_run.json
 data/reports/
 data/cache.sqlite3
 data/chroma/
