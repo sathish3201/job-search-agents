@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: "/profile", label: "Profile" },
   { to: "/improvement", label: "Improvement" },
   { to: "/drafts", label: "Profile Drafts" },
+  { to: "/profile-audit", label: "Profile Audit" },
 ];
 
 export default function Layout() {

@@ -286,7 +286,8 @@ body {
   color: var(--text);
 }
 
-.table select {
+.table select,
+.stream-toggle select {
   background: var(--surface-2);
   color: var(--text);
   border: 1px solid var(--border);

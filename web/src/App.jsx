@@ -6,6 +6,7 @@ import Applications from "./pages/Applications";
 import Profile from "./pages/Profile";
 import Improvement from "./pages/Improvement";
 import ProfileDrafts from "./pages/ProfileDrafts";
+import ProfileAudit from "./pages/ProfileAudit";
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="profile" element={<Profile />} />
           <Route path="improvement" element={<Improvement />} />
           <Route path="drafts" element={<ProfileDrafts />} />
+          <Route path="profile-audit" element={<ProfileAudit />} />
         </Route>
       </Routes>
     </BrowserRouter>
