@@ -4,9 +4,11 @@ ApplyRequest and agents/apply_playwright.py for why this needs a typed
 confirmation phrase and only works when this API is running locally)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from api.schemas import ApplicationUpdate, ApplyRequest, ApplyResponse
+from auth import get_current_user
+from db import UserRow
 from models import Application, ApplicationStatus
 from store import ApplicationStore
 
@@ -14,14 +16,16 @@ router = APIRouter(prefix="/api/applications", tags=["applications"])
 
 
 @router.get("", response_model=list[Application])
-def list_applications():
-    store = ApplicationStore()
+def list_applications(current_user: UserRow = Depends(get_current_user)):
+    store = ApplicationStore(current_user.id)
     return sorted(store.all(), key=lambda a: a.last_updated, reverse=True)
 
 
 @router.patch("/{dedupe_key:path}", response_model=Application)
-def update_application(dedupe_key: str, update: ApplicationUpdate):
-    store = ApplicationStore()
+def update_application(
+    dedupe_key: str, update: ApplicationUpdate, current_user: UserRow = Depends(get_current_user)
+):
+    store = ApplicationStore(current_user.id)
     app = store.get(dedupe_key)
     if app is None:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -38,7 +42,9 @@ def update_application(dedupe_key: str, update: ApplicationUpdate):
 
 
 @router.post("/{dedupe_key:path}/apply", response_model=ApplyResponse)
-def apply_to_application(dedupe_key: str, request: ApplyRequest):
+def apply_to_application(
+    dedupe_key: str, request: ApplyRequest, current_user: UserRow = Depends(get_current_user)
+):
     """Submits (or opens for manual completion) a real job application via
     a local headed Playwright browser. HIGH RISK — see
     agents/apply_playwright.py's module docstring. This endpoint will hang
@@ -46,7 +52,7 @@ def apply_to_application(dedupe_key: str, request: ApplyRequest):
     called against a headless/unattended deployment — it must only be
     called against this API running locally, where a human is present to
     interact with the browser and this process's stdin."""
-    store = ApplicationStore()
+    store = ApplicationStore(current_user.id)
     app = store.get(dedupe_key)
     if app is None:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -66,11 +72,11 @@ def apply_to_application(dedupe_key: str, request: ApplyRequest):
 
 
 @router.post("/{dedupe_key:path}/discard", response_model=Application)
-def discard_application(dedupe_key: str):
+def discard_application(dedupe_key: str, current_user: UserRow = Depends(get_current_user)):
     """User chose not to apply — marks discarded_by_user so the dashboard
     can hide it, without conflating this with a recruiter-side rejection
     (ApplicationStatus.REJECTED means something different)."""
-    store = ApplicationStore()
+    store = ApplicationStore(current_user.id)
     app = store.get(dedupe_key)
     if app is None:
         raise HTTPException(status_code=404, detail="Application not found")

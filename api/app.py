@@ -18,7 +18,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import applications, improvement, model_status, pipeline, profile, similar_jobs, tailor
+from api.routers import (
+    applications,
+    auth,
+    improvement,
+    model_status,
+    pipeline,
+    profile,
+    similar_jobs,
+    tailor,
+    tailor_chat,
+)
 
 app = FastAPI(title="Job Search Agent API", version="1.0")
 
@@ -38,12 +48,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(pipeline.router)
 app.include_router(applications.router)
 app.include_router(profile.router)
 app.include_router(improvement.router)
 app.include_router(similar_jobs.router)
 app.include_router(tailor.router)
+app.include_router(tailor_chat.router)
 app.include_router(model_status.router)
 
 

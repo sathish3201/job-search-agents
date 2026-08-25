@@ -1,4 +1,16 @@
-"""Simple JSON-backed store for tracked applications. No DB dependency needed at this scale."""
+"""Simple JSON-backed store for tracked applications. No DB dependency
+needed at this scale.
+
+Per-user since multi-user support was added: one file per user, at
+data/applications/{user_id}.json, rather than a single shared
+data/applications.json. This is a structural ownership guarantee (which
+file you opened), not a filter condition that could be forgotten at some
+call site — deliberately chosen over "one shared file plus a user_id
+field" for that reason. It also sidesteps a real data-model question: once
+two users can independently apply to the same job listing, "job X applied
+to by user A" and "job X applied to by user B" need to be two independent
+records, not one dedupe_key-keyed row shared between them — one file per
+user makes dedupe_key safely user-scoped again without a composite key."""
 from __future__ import annotations
 
 import json
@@ -7,7 +19,7 @@ import threading
 
 from models import Application
 
-DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "applications.json")
+DEFAULT_DIR = os.path.join(os.path.dirname(__file__), "data", "applications")
 
 # Guards every read-modify-write cycle across the whole process. Needed
 # because rank_jobs_node now persists each job the instant it's ranked (see
@@ -15,13 +27,21 @@ DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "applications.jso
 # ThreadPoolExecutor workers — each ApplicationStore() instance does a fresh
 # load-then-save, so two threads racing here could silently lose one
 # thread's write (last save wins, load-before-save means neither sees the
-# other's update). A single process-wide lock serializes those cycles.
+# other's update). One process-wide lock, shared across all users' files —
+# slightly over-serializes concurrent writes to two different users' files,
+# but that's a minor throughput cost, never a correctness issue, and keeps
+# this simple rather than introducing per-file locking.
 _lock = threading.Lock()
 
 
+def _path_for(user_id: int | str) -> str:
+    return os.path.join(DEFAULT_DIR, f"{user_id}.json")
+
+
 class ApplicationStore:
-    def __init__(self, path: str = DEFAULT_PATH):
-        self.path = path
+    def __init__(self, user_id: int | str = "local", path: str | None = None):
+        self.user_id = user_id
+        self.path = path or _path_for(user_id)
         self._apps: dict[str, Application] = {}
         self._load()
 

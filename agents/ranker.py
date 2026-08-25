@@ -111,8 +111,16 @@ class LLMRanker:
         self._cache = cache or SqliteCache()
         self._max_workers = max_workers
 
-    def _rank_one(self, job: JobListing, profile: CandidateProfile) -> RankedJob:
-        cache_key = "rank:" + content_hash(job.dedupe_key, profile.resume_raw_text)
+    def _rank_one(
+        self, job: JobListing, profile: CandidateProfile, user_id: int | str = "local"
+    ) -> RankedJob:
+        # user_id folded in explicitly rather than relying solely on
+        # resume_raw_text differing between users — content_hash already
+        # includes the resume text, so two different users' resumes don't
+        # collide in practice today, but making user_id part of the key
+        # structurally (not just incidentally) means that stays true even
+        # if resume_raw_text's role in the hash ever changes.
+        cache_key = f"rank:{user_id}:" + content_hash(job.dedupe_key, profile.resume_raw_text)
         cached = self._cache.get(cache_key)
         if cached is not None:
             return RankedJob(
@@ -210,6 +218,7 @@ PITCH: <1-2 sentences, first person, why this candidate fits>
         profile: CandidateProfile,
         on_progress: Optional[ProgressCallback] = None,
         on_ranked: Optional[RankedCallback] = None,
+        user_id: int | str = "local",
     ) -> list[RankedJob]:
         """on_progress(done, total) fires after each job finishes ranking —
         each call can be a slow remote LLM round-trip, so callers (the API
@@ -229,7 +238,7 @@ PITCH: <1-2 sentences, first person, why this candidate fits>
         ranked: list[RankedJob] = []
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
-            futures = [pool.submit(self._rank_one, job, profile) for job in jobs]
+            futures = [pool.submit(self._rank_one, job, profile, user_id) for job in jobs]
             for future in futures:
                 result = future.result()
                 ranked.append(result)

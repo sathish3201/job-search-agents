@@ -1,5 +1,8 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import StatusBadge from "./StatusBadge";
+import OnboardingModal, { useOnboardingDismissed } from "./OnboardingModal";
+import { useAuth } from "../context/AuthContext";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true },
@@ -11,6 +14,20 @@ const NAV_ITEMS = [
 ];
 
 export default function Layout() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const onboardingDismissed = useOnboardingDismissed();
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    if (!onboardingDismissed) setShowOnboarding(true);
+  }, [onboardingDismissed]);
+
+  function handleLogout() {
+    logout();
+    navigate("/login");
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -28,10 +45,19 @@ export default function Layout() {
           ))}
         </nav>
         <StatusBadge />
+        {user && (
+          <div className="nav" style={{ marginLeft: "1rem" }}>
+            <span className="muted">{user.email}</span>
+            <button type="button" onClick={handleLogout}>
+              Log out
+            </button>
+          </div>
+        )}
       </header>
       <main className="content">
         <Outlet />
       </main>
+      {showOnboarding && <OnboardingModal onClose={() => setShowOnboarding(false)} />}
     </div>
   );
 }

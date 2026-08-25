@@ -13,13 +13,13 @@ _cache = SqliteCache()
 _vector_store = VectorStore(cache=_cache)
 
 
-def index_ranked_jobs_job(ranked_jobs: list[RankedJob]) -> None:
+def index_ranked_jobs_job(ranked_jobs: list[RankedJob], user_id: int | str = "local") -> None:
     """Runs in the background after a pipeline run. Skips jobs already
     present in the application tracker's seen-keys set (the same SQLite-
     backed "have I processed this job title before" check used elsewhere)
     on top of VectorStore's own per-job dedup, so a repeat run over mostly
     the same job listings does near-zero embedding work."""
-    store = ApplicationStore()
+    store = ApplicationStore(user_id)
     already_tracked = store.seen_keys()
 
     # Jobs freshly tracked this run are exactly the ones worth indexing —
@@ -33,7 +33,7 @@ def index_ranked_jobs_job(ranked_jobs: list[RankedJob]) -> None:
         return
 
     try:
-        count = _vector_store.index_ranked_jobs(new_jobs)
+        count = _vector_store.index_ranked_jobs(new_jobs, user_id=user_id)
         print(f"[vector_indexer] indexed {count} newly-tracked jobs into ChromaDB", flush=True)
     except Exception as e:
         # Indexing is a nice-to-have, not core to the pipeline's job — a

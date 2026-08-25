@@ -2,10 +2,14 @@
 __pycache__/
 *.pyc
 data/applications.json
+data/applications/
 data/last_run.json
+data/run_state/
 data/reports/
 data/cache.sqlite3
+data/auth.sqlite3
 data/chroma/
+data/resumes/
 .venv/
 
 # frontend

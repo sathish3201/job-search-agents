@@ -1,14 +1,21 @@
-"""Holder for the most recent pipeline run's results, plus its status.
+"""Holder for one user's most recent pipeline run results, plus its status.
 Single responsibility: hold state; it doesn't know how to run the pipeline
 (that's api/pipeline_runner.py) or what to do with the data (that's the
 routers).
 
+Per-user since multi-user support was added: each user gets their own
+RunState instance (see get_run_state() below), not a single shared
+process-wide singleton — one user's dashboard must never show another
+user's ranked jobs or profile. Access RunState only through
+get_run_state(user_id), never construct one directly outside this module
+or tests.
+
 The completed-run snapshot (ranked_jobs, ats_passed_jobs, profile_drafts,
-profile, new_applications_count) is persisted to a JSON file on every
-set_done() and reloaded on process start, so a Render free-tier restart
-(idle spin-down, redeploy) doesn't silently blank the dashboard back to
-"no jobs yet" — the frontend was otherwise indistinguishable from a
-never-run pipeline after any restart, even though data/applications.json
+profile, new_applications_count) is persisted to a per-user JSON file on
+every set_done() and reloaded on process start, so a Render free-tier
+restart (idle spin-down, redeploy) doesn't silently blank the dashboard
+back to "no jobs yet" — the frontend was otherwise indistinguishable from
+a never-run pipeline after any restart, even though data/applications.json
 and the SQLite cache both already survived restarts fine. status/message/
 live_jobs stay in-memory only on purpose: they describe "is a run
 happening right now in this process", which is never true immediately
@@ -22,13 +29,18 @@ import threading
 
 from models import CandidateProfile, ProfileDraft, RankedJob
 
-DEFAULT_SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "last_run.json")
+SNAPSHOT_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "run_state")
+
+
+def _snapshot_path_for(user_id: int | str) -> str:
+    return os.path.join(SNAPSHOT_DIR, f"{user_id}.json")
 
 
 class RunState:
-    def __init__(self, snapshot_path: str = DEFAULT_SNAPSHOT_PATH):
+    def __init__(self, user_id: int | str = "local", snapshot_path: str | None = None):
+        self.user_id = user_id
         self._lock = threading.Lock()
-        self._snapshot_path = snapshot_path
+        self._snapshot_path = snapshot_path or _snapshot_path_for(user_id)
         self.status: str = "idle"
         self.message: str = ""
         # ats_passed_jobs is what the frontend displays — jobs that cleared
@@ -134,4 +146,24 @@ class RunState:
             print(f"[run_state] failed to restore snapshot, starting fresh: {e}", flush=True)
 
 
-run_state = RunState()
+# Registry, not a bare singleton: lazily constructs and caches one
+# RunState per user_id. Each RunState instance keeps its own internal
+# lock (unchanged from before) — this registry's lock only protects the
+# dict lookup/insert itself, a much smaller critical section.
+#
+# Memory note: each active user's RunState stays in memory (small — a
+# profile plus a list of ranked jobs, no embeddings held here) with no
+# eviction/TTL. Fine for a handful of concurrent users on the 512MB
+# Render free tier; would need an eviction strategy (drop from the
+# registry after N minutes idle, relying on the JSON snapshot to reload
+# on next access) if this ever needs to support many concurrent users.
+# Not required for this phase.
+_registry: dict[int | str, RunState] = {}
+_registry_lock = threading.Lock()
+
+
+def get_run_state(user_id: int | str) -> RunState:
+    with _registry_lock:
+        if user_id not in _registry:
+            _registry[user_id] = RunState(user_id=user_id)
+        return _registry[user_id]

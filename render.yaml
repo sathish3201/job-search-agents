@@ -15,6 +15,11 @@ services:
         value: phi3:mini
       - key: OLLAMA_SERVICE_API_KEY
         sync: false # set manually in Render dashboard
+      # Required at startup — auth.py refuses to boot on Render without this
+      # (forgeable tokens otherwise). Generate a real random secret and set
+      # it manually in the Render dashboard, same as the vars above.
+      - key: JWT_SECRET
+        sync: false
       - key: RESUME_MD_PATH
         value: ./RESUME.md
       - key: JOB_SEARCH_QUERY

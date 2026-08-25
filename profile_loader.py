@@ -73,13 +73,21 @@ def load_resume_text(path: str | None = None) -> str:
         return f.read()
 
 
-def parse_profile(resume_text: str, llm, cache: SqliteCache | None = None) -> CandidateProfile:
+def parse_profile(
+    resume_text: str, llm, cache: SqliteCache | None = None, user_id: int | str = "local"
+) -> CandidateProfile:
     """Ask the LLM to extract a few structured fields with a short, direct prompt.
     Small local models (3B-class) are unreliable at full pydantic-schema JSON
     output — a plain labeled-line format is faster and much less likely to fail
-    to parse, at the cost of being a bit more manual to pull apart here."""
+    to parse, at the cost of being a bit more manual to pull apart here.
+
+    user_id is folded into the cache key (default "local" for the
+    single-user CLI/dev path via RESUME_MD_PATH) so two different users
+    who happen to upload byte-identical resume text don't collide and
+    read back each other's cached CandidateProfile — a real, if
+    low-probability, correctness gap once multiple users exist."""
     cache = cache or SqliteCache()
-    cache_key = "profile:" + content_hash(resume_text)
+    cache_key = f"profile:{user_id}:" + content_hash(resume_text)
     cached = cache.get(cache_key)
     if cached is not None:
         return CandidateProfile(**cached)

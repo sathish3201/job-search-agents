@@ -164,6 +164,9 @@ def tailor_resume_for_target(
                 tailored_summary=current_summary,
                 keywords_added=keywords_added,
                 reasoning=reasoning or "Existing resume already covered enough keywords for this target.",
+                full_tailored_resume_text=build_full_tailored_resume(
+                    profile.resume_raw_text, profile.headline, profile.summary, current_headline, current_summary
+                ),
             )
 
         truthfully_addable = _truthfully_addable(missing, profile.skills)
@@ -205,6 +208,9 @@ def tailor_resume_for_target(
         keywords_added=keywords_added,
         reasoning=reasoning + f" (Reached {final_score}/100, short of the {target_score} target — "
         "no further truthful keywords to add.)",
+        full_tailored_resume_text=build_full_tailored_resume(
+            profile.resume_raw_text, profile.headline, profile.summary, current_headline, current_summary
+        ),
     )
 
 
@@ -244,6 +250,61 @@ def _strip_fabricated_numbers(draft_text: str, source_text: str, fallback_text: 
 
     result = " ".join(kept).strip()
     return result if result else fallback_text
+
+
+def find_unsupported_numbers(draft_text: str, source_text: str) -> list[str]:
+    """Detection-only counterpart to _strip_fabricated_numbers, for callers
+    that want to ask the user for the real figure instead of silently
+    dropping it (see agents/resume_editor.py's interactive chat-tool path).
+    Returns the distinct numeric tokens in draft_text that don't literally
+    appear in source_text — empty list means nothing to flag."""
+    allowed_numbers = set(_NUMBER_RE.findall(source_text))
+    found_numbers = set(_NUMBER_RE.findall(draft_text))
+    return sorted(found_numbers - allowed_numbers)
+
+
+def build_full_tailored_resume(
+    resume_raw_text: str, original_headline: str, original_summary: str, tailored_headline: str, tailored_summary: str
+) -> str:
+    """Builds a full duplicate of the candidate's resume with only the
+    headline/summary swapped for the tailored version — a "man in the
+    middle" splice, not a regenerated document, so every other section
+    (experience, projects, skills, education) is guaranteed byte-identical
+    to the original, never touched or re-drafted.
+
+    Strategy: try a literal substring replace first — parse_profile()'s
+    headline/summary are themselves LLM-distilled and don't always appear
+    verbatim in the raw resume text (especially summary, which is often a
+    paraphrase of a longer "## Summary" section), so a literal match isn't
+    guaranteed. If either literal replace fails, fall back to inserting a
+    clearly-labeled "## Tailored For This Role" block right after the
+    resume's first line (the name/title header), leaving the rest of the
+    document completely untouched either way — never silently drops or
+    duplicates content."""
+    result = resume_raw_text
+    headline_spliced = original_headline and original_headline in result
+    summary_spliced = original_summary and original_summary in result
+
+    if headline_spliced:
+        result = result.replace(original_headline, tailored_headline, 1)
+    if summary_spliced:
+        result = result.replace(original_summary, tailored_summary, 1)
+
+    if headline_spliced and summary_spliced:
+        return result
+
+    # Fallback for whichever piece couldn't be literally spliced — insert
+    # right after the first line rather than guessing where a "summary"
+    # section starts in freeform resume markdown.
+    lines = result.split("\n", 1)
+    first_line = lines[0] if lines else ""
+    rest = lines[1] if len(lines) > 1 else ""
+    fallback_block = "\n\n## Tailored For This Role\n\n"
+    if not headline_spliced:
+        fallback_block += f"**{tailored_headline}**\n\n"
+    if not summary_spliced:
+        fallback_block += f"{tailored_summary}\n"
+    return f"{first_line}{fallback_block}\n{rest}"
 
 
 def _truthfully_addable(missing_keywords: list[str], candidate_skills: list[str]) -> list[str]:

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import TailorDialog from "../components/TailorDialog";
 
 function ScoreBadge({ label, score }) {
   const cls = score >= 80 ? "badge badge-high" : score >= 60 ? "badge badge-mid" : "badge badge-low";
@@ -10,95 +11,11 @@ function ScoreBadge({ label, score }) {
   );
 }
 
-function downloadTextFile(filename, text) {
-  // Browser-native download, no server round-trip needed for plain text.
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function TailoredResumePanel({ tailoring, loading, error, onClose }) {
-  if (!loading && !tailoring && !error) return null;
-
-  const handleDownload = () => {
-    const text = [
-      `Tailored Resume — ${tailoring.target_title}`,
-      "",
-      `Headline: ${tailoring.tailored_headline}`,
-      "",
-      `Summary: ${tailoring.tailored_summary}`,
-      "",
-      `ATS score: ${tailoring.original_ats_score} -> ${tailoring.final_ats_score}`,
-      tailoring.keywords_added.length
-        ? `Keywords added: ${tailoring.keywords_added.join(", ")}`
-        : "",
-      "",
-      tailoring.reasoning,
-    ]
-      .filter(Boolean)
-      .join("\n");
-    downloadTextFile(
-      `tailored-resume-${tailoring.target_title.replace(/\s+/g, "-").toLowerCase()}.txt`,
-      text
-    );
-  };
-
-  return (
-    <div className="side-panel">
-      <div className="side-panel-header">
-        <h2>Tailored Resume</h2>
-        <button onClick={onClose} className="icon-btn" aria-label="Close">
-          ×
-        </button>
-      </div>
-      {loading && <p className="muted">Tailoring resume…</p>}
-      {error && <p className="error-text">{error}</p>}
-      {tailoring && (
-        <>
-          <p className="muted">For: {tailoring.target_title}</p>
-          <div className="ats-score-row">
-            <span>ATS score: </span>
-            <strong>
-              {tailoring.original_ats_score} → {tailoring.final_ats_score}
-            </strong>
-          </div>
-
-          <h4>Headline</h4>
-          <p>{tailoring.tailored_headline}</p>
-
-          <h4>Summary</h4>
-          <p>{tailoring.tailored_summary}</p>
-
-          {tailoring.keywords_added.length > 0 && (
-            <>
-              <h4>Keywords added</h4>
-              <p className="muted">{tailoring.keywords_added.join(", ")}</p>
-            </>
-          )}
-
-          <h4>Why</h4>
-          <p className="muted">{tailoring.reasoning}</p>
-
-          <button onClick={handleDownload} className="primary-btn" style={{ marginTop: "1rem" }}>
-            Download
-          </button>
-        </>
-      )}
-      {!loading && !error && !tailoring && (
-        <p className="muted">
-          This resume already covers enough ATS keywords for this job — no truthful improvement
-          found.
-        </p>
-      )}
-    </div>
-  );
-}
+// TailoredResumePanel (headline/summary-only, plain-text preview) was
+// replaced by TailorDialog (web/src/components/TailorDialog.jsx) — a
+// full two-pane, chat-driven, PDF/DOCX-exporting editor covering any
+// resume section, not just headline/summary. See the interactive resume
+// tailor agent plan for the full rationale.
 
 // Mirrors api/routers/tailor.py's TAILOR_ATS_MIN — kept in sync manually
 // since this is a small UI-only display gate, not worth a round-trip
@@ -108,10 +25,9 @@ function TailoredResumePanel({ tailoring, loading, error, onClose }) {
 // mostly-wasted action.
 const TAILOR_ATS_MIN = 70;
 
-function JobCard({ ranked, onTailor, tailoringKey, onApply, onDiscard, applyState }) {
+function JobCard({ ranked, onTailor, onApply, onDiscard, applyState }) {
   const { job, fit_score, ats_score, matching_skills, missing_skills, tailored_pitch } = ranked;
   const dedupeKey = `${job.source}:${job.external_id}`;
-  const isTailoring = tailoringKey === dedupeKey;
   const state = applyState[dedupeKey] || {};
   const canTailor = ats_score >= TAILOR_ATS_MIN;
 
@@ -152,8 +68,8 @@ function JobCard({ ranked, onTailor, tailoringKey, onApply, onDiscard, applyStat
           View posting →
         </a>
         {canTailor ? (
-          <button onClick={() => onTailor(dedupeKey)} disabled={isTailoring} className="secondary-btn">
-            {isTailoring ? "Tailoring…" : "Tailor Resume"}
+          <button onClick={() => onTailor(dedupeKey)} className="secondary-btn">
+            Tailor Resume
           </button>
         ) : (
           <span
@@ -238,15 +154,16 @@ export default function Dashboard() {
   // display strategy, it picks between two independently.
   const [streamingEnabled, setStreamingEnabled] = useState(true);
 
-  const [tailoringKey, setTailoringKey] = useState(null);
-  const [tailoring, setTailoring] = useState(null);
-  const [tailorError, setTailorError] = useState("");
-  // Separate from `tailoring` on purpose: the API can legitimately return
-  // null (no truthful ATS improvement found), and null is also `tailoring`'s
-  // untouched initial value — without this flag, panelOpen couldn't tell
-  // "haven't tailored anything yet" apart from "tailored, backend said null",
-  // and the panel would silently never open for that valid response.
-  const [hasTailored, setHasTailored] = useState(false);
+  // Minimum ATS score (dashboard dropdown, 50-100) a ranked job must clear
+  // to get added to the Applications tracker for this run — see
+  // agents/graph.py's min_ats_score field, which this feeds.
+  const [minAtsScore, setMinAtsScore] = useState(50);
+
+  // dedupeKey of the job currently open in TailorDialog, or null when
+  // closed — the dialog owns all of its own session/chat/draft state
+  // internally (see web/src/components/TailorDialog.jsx), so this is the
+  // only piece Dashboard needs to track.
+  const [tailorDialogKey, setTailorDialogKey] = useState(null);
 
   // Keyed by dedupeKey: { applying: bool, result: {success, message} | null,
   // discarded: bool }. Kept separate from the job objects themselves since
@@ -291,7 +208,7 @@ export default function Dashboard() {
   }, []);
 
   const handleRun = async () => {
-    const res = await api.triggerRun();
+    const res = await api.triggerRun(minAtsScore);
     setStatus(res.status);
     setMessage(res.message);
     if (streamingEnabled) setJobs([]); // start the incremental reveal from empty
@@ -322,21 +239,7 @@ export default function Dashboard() {
     }
   };
 
-  const handleTailor = async (dedupeKey) => {
-    setTailoringKey(dedupeKey);
-    setTailoring(null);
-    setTailorError("");
-    setHasTailored(false);
-    try {
-      const result = await api.tailorResume(dedupeKey);
-      setTailoring(result); // null is a valid response — "no truthful improvement"
-      setHasTailored(true);
-    } catch (err) {
-      setTailorError(err.message || "Could not tailor resume for this job.");
-    } finally {
-      setTailoringKey(null);
-    }
-  };
+  const handleTailor = (dedupeKey) => setTailorDialogKey(dedupeKey);
 
   const handleApplyClick = (dedupeKey, job) => {
     setPendingApply({ dedupeKey, job });
@@ -373,10 +276,9 @@ export default function Dashboard() {
   };
 
   const sorted = [...jobs].sort((a, b) => b.fit_score - a.fit_score);
-  const panelOpen = tailoringKey !== null || hasTailored || tailorError !== "";
 
   return (
-    <div className={panelOpen ? "layout-with-panel" : ""}>
+    <div>
       <div className="main-column">
         <div className="page-header">
           <h1>Dashboard</h1>
@@ -389,6 +291,24 @@ export default function Dashboard() {
                 disabled={status === "running"}
               />
               Live results
+            </label>
+            <label
+              className="stream-toggle"
+              title="Only jobs with an ATS score at or above this get added to your Applications tracker"
+            >
+              Min ATS to track
+              <select
+                value={minAtsScore}
+                onChange={(e) => setMinAtsScore(Number(e.target.value))}
+                disabled={status === "running"}
+                style={{ marginLeft: "0.4rem" }}
+              >
+                {[50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100].map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
             </label>
             <button onClick={handleRun} disabled={status === "running"} className="primary-btn">
               {status === "running" ? "Running..." : "Run New Search"}
@@ -416,7 +336,6 @@ export default function Dashboard() {
                 key={`${r.job.source}:${r.job.external_id}`}
                 ranked={r}
                 onTailor={handleTailor}
-                tailoringKey={tailoringKey}
                 onApply={handleApplyClick}
                 onDiscard={handleDiscard}
                 applyState={applyState}
@@ -426,17 +345,8 @@ export default function Dashboard() {
         )}
       </div>
 
-      {panelOpen && (
-        <TailoredResumePanel
-          tailoring={tailoring}
-          loading={tailoringKey !== null}
-          error={tailorError}
-          onClose={() => {
-            setTailoring(null);
-            setTailorError("");
-            setHasTailored(false);
-          }}
-        />
+      {tailorDialogKey && (
+        <TailorDialog dedupeKey={tailorDialogKey} onClose={() => setTailorDialogKey(null)} />
       )}
 
       {pendingApply && (

@@ -16,3 +16,9 @@ chromadb
 apify-client
 beautifulsoup4
 playwright
+passlib[argon2]
+python-jose[cryptography]
+python-multipart
+pypdf
+python-docx
+reportlab

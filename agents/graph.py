@@ -141,6 +141,19 @@ class PipelineState(BaseModel):
     location: str
     remote_ok: bool
     profile: CandidateProfile
+    # Threads through to ApplicationStore (per-user file), the ranking
+    # cache key, and the vector-store index — set once by
+    # api/pipeline_runner.py from the authenticated request's user, before
+    # this state is ever constructed. "local" is the single-user CLI/dev
+    # default (main.py's RESUME_MD_PATH-driven path), not a real user id.
+    user_id: int | str = "local"
+
+    # User-selected floor (dashboard dropdown, 50-100) for which jobs get
+    # added to the Applications tracker — separate from ATS_FRONTEND_THRESHOLD
+    # (which only controls the ats_passed_jobs display list). Default 50
+    # matches the dropdown's lowest option, i.e. "track almost everything
+    # that passed fit-score ranking" for a user who never touched the control.
+    min_ats_score: int = 50
 
     raw_jobs: list[JobListing] = []
     ranked_jobs: Annotated[list[RankedJob], operator.add] = []
@@ -191,7 +204,12 @@ def search_jobs_node(state: PipelineState) -> dict:
     return {"raw_jobs": deduped}
 
 
-def _persist_if_qualifying(ranked: RankedJob, profile: CandidateProfile) -> None:
+def _persist_if_qualifying(
+    ranked: RankedJob,
+    profile: CandidateProfile,
+    user_id: int | str = "local",
+    min_ats_score: int = 50,
+) -> None:
     """Called from LLMRanker's on_ranked hook the instant one job finishes
     LLM scoring (not after the whole batch). Does three things per
     qualifying job, all live rather than batched at the end:
@@ -213,18 +231,23 @@ def _persist_if_qualifying(ranked: RankedJob, profile: CandidateProfile) -> None
     ranked.ats_keywords_missing = ats.keywords_missing
     ranked.ats_recommendation = ats.recommendation
 
-    store = ApplicationStore()
-    key = ranked.job.dedupe_key
-    already_seen = key in store.seen_keys()
-    if not already_seen:
-        store.upsert(
-            Application(
-                dedupe_key=key,
-                job=ranked.job,
-                status=ApplicationStatus.FOUND,
-                fit_score=ranked.fit_score,
+    # User-controlled floor (dashboard dropdown) — a job that clears
+    # fit-score ranking but not this ATS bar is still shown on the
+    # dashboard (see the ats_passed_jobs comment above), just never added
+    # to the tracker.
+    if ranked.ats_score >= min_ats_score:
+        store = ApplicationStore(user_id)
+        key = ranked.job.dedupe_key
+        already_seen = key in store.seen_keys()
+        if not already_seen:
+            store.upsert(
+                Application(
+                    dedupe_key=key,
+                    job=ranked.job,
+                    status=ApplicationStatus.FOUND,
+                    fit_score=ranked.fit_score,
+                )
             )
-        )
 
     # Fires for every fit-passed job regardless of ATS score, not just
     # ones clearing ATS_FRONTEND_THRESHOLD — the dashboard now shows the
@@ -263,10 +286,14 @@ def rank_jobs_node(state: PipelineState) -> dict:
         if _stage_hook:
             slow_note = " (slow LLM call)" if tag == "SLOW" else ""
             _stage_hook(f"Ranked {title!r} — fit={ranked_job.fit_score}{slow_note}")
-        _persist_if_qualifying(ranked_job, state.profile)
+        _persist_if_qualifying(ranked_job, state.profile, state.user_id, state.min_ats_score)
 
     ranked = _ranker.rank_all(
-        state.raw_jobs, state.profile, on_progress=_progress_hook, on_ranked=on_ranked
+        state.raw_jobs,
+        state.profile,
+        on_progress=_progress_hook,
+        on_ranked=on_ranked,
+        user_id=state.user_id,
     )
     before = len(ranked)
     ranked = [r for r in ranked if r.fit_score >= MIN_FIT_SCORE]
@@ -299,11 +326,13 @@ def ats_check_jobs_node(state: PipelineState) -> dict:
 
 @timed_stage("update_tracker")
 def update_tracker_node(state: PipelineState) -> dict:
-    store = ApplicationStore()
+    store = ApplicationStore(state.user_id)
     seen = store.seen_keys()
     new_apps = []
 
     for ranked in state.ranked_jobs:
+        if ranked.ats_score < state.min_ats_score:
+            continue  # below the user-selected tracker floor
         key = ranked.job.dedupe_key
         if key in seen:
             continue  # already tracked from a previous run
